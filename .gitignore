@@ -1,0 +1,14 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Models (DO NOT COMMIT)
+models/
+
+# Nsight artifacts (DO NOT COMMIT)
+artifacts/*.nsys-rep
+artifacts/*.sqlite
+
+# OS
+.DS_Store

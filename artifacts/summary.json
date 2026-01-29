@@ -1,0 +1,193 @@
+{
+  "type": "nsight_systems_baseline_summary",
+  "sqlite": "artifacts/vllm_capture.sqlite",
+  "capture_window_s": 68.60468,
+  "cpu_osrt": {
+    "present": true,
+    "top_calls": [
+      {
+        "name": "pthread_cond_timedwait",
+        "total_s": 595.180457,
+        "calls": 3967,
+        "pct_of_capture_window": 867.551
+      },
+      {
+        "name": "pthread_cond_wait",
+        "total_s": 475.193108,
+        "calls": 16,
+        "pct_of_capture_window": 692.654
+      },
+      {
+        "name": "epoll_wait",
+        "total_s": 428.208999,
+        "calls": 24249,
+        "pct_of_capture_window": 624.169
+      },
+      {
+        "name": "poll",
+        "total_s": 134.614884,
+        "calls": 4654,
+        "pct_of_capture_window": 196.218
+      },
+      {
+        "name": "read",
+        "total_s": 60.939597,
+        "calls": 24733,
+        "pct_of_capture_window": 88.827
+      },
+      {
+        "name": "sem_clockwait",
+        "total_s": 53.133173,
+        "calls": 8,
+        "pct_of_capture_window": 77.448
+      },
+      {
+        "name": "epoll_pwait",
+        "total_s": 39.654467,
+        "calls": 65,
+        "pct_of_capture_window": 57.801
+      },
+      {
+        "name": "sem_wait",
+        "total_s": 3.184715,
+        "calls": 300,
+        "pct_of_capture_window": 4.642
+      },
+      {
+        "name": "select",
+        "total_s": 1.001015,
+        "calls": 1,
+        "pct_of_capture_window": 1.459
+      },
+      {
+        "name": "ioctl",
+        "total_s": 0.407503,
+        "calls": 4150,
+        "pct_of_capture_window": 0.594
+      }
+    ],
+    "notes": [
+      "OSRT time is summed across threads, so totals can exceed capture window.",
+      "poll/epoll_wait/pthread_cond_wait usually mean CPU threads are waiting for work or synchronization."
+    ]
+  },
+  "gpu_kernels": {
+    "present": true,
+    "total_kernel_s": 3.052553,
+    "top_kernels": [
+      {
+        "name": "1549",
+        "total_s": 0.890926,
+        "instances": 4292
+      },
+      {
+        "name": "1654",
+        "total_s": 0.626449,
+        "instances": 3049
+      },
+      {
+        "name": "1552",
+        "total_s": 0.329498,
+        "instances": 464
+      },
+      {
+        "name": "1652",
+        "total_s": 0.261045,
+        "instances": 1122
+      },
+      {
+        "name": "1663",
+        "total_s": 0.208947,
+        "instances": 2211
+      },
+      {
+        "name": "1653",
+        "total_s": 0.168039,
+        "instances": 2992
+      },
+      {
+        "name": "1632",
+        "total_s": 0.105646,
+        "instances": 1057
+      },
+      {
+        "name": "1553",
+        "total_s": 0.073373,
+        "instances": 4004
+      },
+      {
+        "name": "1665",
+        "total_s": 0.067082,
+        "instances": 726
+      },
+      {
+        "name": "1639",
+        "total_s": 0.051146,
+        "instances": 2794
+      },
+      {
+        "name": "1627",
+        "total_s": 0.050745,
+        "instances": 22
+      },
+      {
+        "name": "1554",
+        "total_s": 0.048458,
+        "instances": 4004
+      },
+      {
+        "name": "1651",
+        "total_s": 0.034463,
+        "instances": 198
+      },
+      {
+        "name": "1551",
+        "total_s": 0.031279,
+        "instances": 4004
+      },
+      {
+        "name": "1555",
+        "total_s": 0.02347,
+        "instances": 3822
+      }
+    ],
+    "kernel_name_source": "demangledName"
+  },
+  "gpu_memcpy": {
+    "present": true,
+    "total_memcpy_s": 0.464284,
+    "total_memcpy_mb": 2224.820655,
+    "by_op": [
+      {
+        "op": 1,
+        "total_s": 0.462654,
+        "count": 1922,
+        "total_mb": 2099.772677
+      },
+      {
+        "op": 8,
+        "total_s": 0.001243,
+        "count": 91,
+        "total_mb": 125.004318
+      },
+      {
+        "op": 2,
+        "total_s": 0.000386,
+        "count": 257,
+        "total_mb": 0.043659
+      }
+    ],
+    "notes": [
+      "The op field is an enum value; mapping to H2D/D2H/D2D is optional for baseline.",
+      "Totals are still correct baseline evidence even before enum decoding."
+    ]
+  },
+  "cuda_graph": {
+    "present": true,
+    "node_events_rows": 65466
+  },
+  "baseline_notes": [
+    "Evidence-first baseline profiling (not optimization).",
+    "GPU kernel/memcpy tables present => child/worker process tracing worked."
+  ]
+}
