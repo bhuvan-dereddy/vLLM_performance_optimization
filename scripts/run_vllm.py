@@ -7,7 +7,7 @@ import ctypes
 
 from vllm import LLM, SamplingParams
 
-# ---------- NVTX (labels only; does NOT control capture) ----------
+#            NVTX (labels only; does NOT control capture) 
 try:
     import nvtx
 except Exception:
@@ -26,9 +26,8 @@ def nvtx_range(name: str):
         nvtx.pop_range()
 
 
-# ---------- CUDA Profiler API (controls Nsight capture) ----------
+#            CUDA Profiler API (controls Nsight capture) 
 def _load_cudart() -> ctypes.CDLL | None:
-    # Common libcudart names on Linux
     candidates = [
         "libcudart.so",
         "libcudart.so.12",
@@ -71,7 +70,7 @@ def main() -> None:
             f"Model dir not found: {model_dir}. Run scripts/download_model.py first."
         )
 
-    # ------------------- NOT CAPTURED -------------------
+    #           NOT CAPTURED 
     with nvtx_range("phase:model_init"):
         llm = LLM(
             model=str(model_dir),
@@ -103,15 +102,17 @@ def main() -> None:
     workload = prompts * repeats
     print(f"Running workload: {len(prompts)} prompts × {repeats} = {len(workload)} total prompts")
 
-    # ------------------- CAPTURED ONLY HERE -------------------
-    with nvtx_range("phase:inference"):
-        cuda_profiler_start()  # Nsight starts capture here
-        try:
+    #                 CAPTURED ONLY HERE 
+    # IMPORTANT FIX:
+    # Start capture FIRST, then enter NVTX range so NVTX push/pop are inside capture window.
+    cuda_profiler_start()
+    try:
+        with nvtx_range("phase:inference"):
             t0 = time.time()
             outputs = llm.generate(workload, run_params)
             t1 = time.time()
-        finally:
-            cuda_profiler_stop()  # Nsight stops capture here
+    finally:
+        cuda_profiler_stop()
 
     print(f"Total wall time (inference only): {(t1 - t0):.3f}s")
     if outputs:

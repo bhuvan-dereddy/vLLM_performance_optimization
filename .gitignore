@@ -3,12 +3,23 @@ venv/
 __pycache__/
 *.pyc
 
-# Models (DO NOT COMMIT)
+# Models 
 models/
 
-# Nsight artifacts (DO NOT COMMIT)
+# Nsight artifacts 
 artifacts/*.nsys-rep
 artifacts/*.sqlite
 
 # OS
 .DS_Store
+
+artifacts/
+**/*.nsys-rep
+**/*.sqlite
+**/*.qdrep
+**/*.qdstrm
+# ignore generated summaries by default
+**/*.summary.json
+**/*.diff.json
+
+
