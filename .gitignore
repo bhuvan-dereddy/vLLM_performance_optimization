@@ -23,3 +23,32 @@ artifacts/
 **/*.diff.json
 
 
+# -------------------------------
+# Python / environment
+# -------------------------------
+venv/
+__pycache__/
+*.pyc
+
+# -------------------------------
+# Datasets & models
+# -------------------------------
+datasets/
+models/
+
+# -------------------------------
+# Nsight Systems artifacts
+# -------------------------------
+artifacts/*.nsys-rep
+artifacts/*.sqlite
+
+# Keep summaries + diffs (tracked)
+!artifacts/*_summary.json
+!artifacts/*_diff.json
+
+# -------------------------------
+# OS / editor noise
+# -------------------------------
+.DS_Store
+.vscode/
+.idea/
