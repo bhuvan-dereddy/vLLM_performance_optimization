@@ -17,7 +17,7 @@ from torchvision.models import resnet50
 from nvtx_utils import nvtx_range
 
 
-# ---------------- CUDA Profiler API (controls Nsight capture) ----------------
+#                   CUDA Profiler API (controls Nsight capture) 
 def _load_cudart() -> ctypes.CDLL | None:
     candidates = [
         "libcudart.so",
@@ -53,7 +53,7 @@ def cuda_profiler_stop() -> None:
         pass
 
 
-# ---------------- Opt 4: CUDA Prefetcher ----------------
+#                   Opt 4: CUDA Prefetcher 
 class CudaPrefetcher:
     def __init__(self, loader, device: str, non_blocking: bool):
         self.loader = iter(loader)

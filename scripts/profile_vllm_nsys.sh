@@ -5,11 +5,12 @@ REPO_ROOT="/home/ubuntu/gpu-profiling"
 source "${REPO_ROOT}/scripts/env_profile.sh"
 
 mkdir -p "${REPO_ROOT}/artifacts"
-OUT_BASE="${REPO_ROOT}/artifacts/vllm_capture"
+
+# Output PREFIX (no extension)
+OUT_BASE="${NSYS_OUT_PREFIX:-${REPO_ROOT}/artifacts/vllm_capture}"
 
 "${NSYS}" profile \
   --force-overwrite=true \
-  --stats=true \
   --trace=osrt,cuda,nvtx \
   --sample=none \
   --cpuctxsw=none \
@@ -20,4 +21,4 @@ OUT_BASE="${REPO_ROOT}/artifacts/vllm_capture"
   -o "${OUT_BASE}" \
   python "${REPO_ROOT}/scripts/run_vllm.py"
 
-echo "✅ Wrote: ${OUT_BASE}.nsys-rep"
+echo "Wrote: ${OUT_BASE}.nsys-rep"

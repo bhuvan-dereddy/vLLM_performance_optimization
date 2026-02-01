@@ -78,7 +78,7 @@ def main() -> None:
     }
 
     OUT.write_text(json.dumps(diff, indent=2))
-    print(f"✅ Wrote {OUT}")
+    print(f" Wrote {OUT}")
 
 
 if __name__ == "__main__":

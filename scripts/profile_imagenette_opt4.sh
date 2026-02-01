@@ -28,4 +28,4 @@ OUT_BASE="${REPO_ROOT}/artifacts/p2_imagenette_opt4"
     --warmup_steps 10 \
     --profile_steps 50
 
-echo "✅ Wrote: ${OUT_BASE}.nsys-rep"
+echo " Wrote: ${OUT_BASE}.nsys-rep"

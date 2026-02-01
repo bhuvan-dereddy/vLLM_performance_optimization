@@ -13,4 +13,4 @@ OUT_SQLITE="${REPO_ROOT}/artifacts/p2_imagenette_opt4.sqlite"
   -o "${OUT_SQLITE}" \
   "${IN_REP}"
 
-echo "✅ Wrote: ${OUT_SQLITE}"
+echo " Wrote: ${OUT_SQLITE}"

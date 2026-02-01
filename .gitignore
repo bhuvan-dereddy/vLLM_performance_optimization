@@ -1,50 +1,34 @@
-# Python
+# -------------------------------
+# Python / virtual environment
+# -------------------------------
 venv/
 __pycache__/
 *.pyc
 
-# Models 
+# -------------------------------
+# Models & datasets
+# -------------------------------
 models/
-
-# Nsight artifacts 
-artifacts/*.nsys-rep
-artifacts/*.sqlite
-
-# OS
-.DS_Store
-
-artifacts/
-**/*.nsys-rep
-**/*.sqlite
-**/*.qdrep
-**/*.qdstrm
-# ignore generated summaries by default
-**/*.summary.json
-**/*.diff.json
-
-
-# -------------------------------
-# Python / environment
-# -------------------------------
-venv/
-__pycache__/
-*.pyc
-
-# -------------------------------
-# Datasets & models
-# -------------------------------
 datasets/
-models/
 
 # -------------------------------
-# Nsight Systems artifacts
+# Nsight Systems / profiling artifacts
 # -------------------------------
-artifacts/*.nsys-rep
-artifacts/*.sqlite
+artifacts/
+*.nsys-rep
+*.sqlite
+*.qdrep
+*.qdstrm
+*.csv
 
-# Keep summaries + diffs (tracked)
+# Keep lightweight generated outputs
 !artifacts/*_summary.json
 !artifacts/*_diff.json
+
+# -------------------------------
+# Caches
+# -------------------------------
+.cache/
 
 # -------------------------------
 # OS / editor noise

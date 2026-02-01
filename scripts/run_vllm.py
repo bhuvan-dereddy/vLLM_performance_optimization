@@ -103,8 +103,7 @@ def main() -> None:
     print(f"Running workload: {len(prompts)} prompts × {repeats} = {len(workload)} total prompts")
 
     #                 CAPTURED ONLY HERE 
-    # IMPORTANT FIX:
-    # Start capture FIRST, then enter NVTX range so NVTX push/pop are inside capture window.
+    # Starting capture FIRST, then entering NVTX range so NVTX push/pop are inside capture window.
     cuda_profiler_start()
     try:
         with nvtx_range("phase:inference"):
