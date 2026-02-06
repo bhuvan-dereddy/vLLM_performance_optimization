@@ -1,0 +1,64 @@
+{
+    "server": {
+        "model_dir": "models/tinyllama",
+        "host": "127.0.0.1",
+        "port": 8000,
+        "dtype": "float16",
+        "gpu_memory_utilization": 0.90,
+        "max_model_len": 2048,
+        "startup_timeout_s": 240
+    },
+    "dataset": {
+        "prompts_jsonl": "data/sharegpt_prompts.jsonl"
+    },
+    "workload": {
+        "concurrency": 4,
+        "max_new_tokens": 64,
+        "temperature": 0.0,
+        "timeout_s": 180.0
+    },
+    "experiment": {
+        "screening_requests": 20,
+        "final_requests": 100,
+        "top_k_final": 4
+    },
+    "metrics": {
+        "primary": "p95_total_ms"
+    },
+    "knobs": [
+        {
+            "name": "prefix_caching",
+            "type": "bool",
+            "off_flags": [],
+            "on_flags": [
+                "--enable-prefix-caching"
+            ]
+        },
+        {
+            "name": "disable_log_requests",
+            "type": "bool",
+            "off_flags": [],
+            "on_flags": [
+                "--disable-log-requests"
+            ]
+        },
+        {
+            "name": "max_num_batched_tokens",
+            "type": "bool",
+            "off_flags": [],
+            "on_flags": [
+                "--max-num-batched-tokens",
+                "4096"
+            ]
+        },
+        {
+            "name": "max_num_seqs",
+            "type": "bool",
+            "off_flags": [],
+            "on_flags": [
+                "--max-num-seqs",
+                "64"
+            ]
+        }
+    ]
+}
