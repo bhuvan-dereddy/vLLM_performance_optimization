@@ -1,38 +1,23 @@
-# -------------------------------
-# Python / virtual environment
-# -------------------------------
 venv/
+.venv/
 __pycache__/
 *.pyc
 
-# -------------------------------
-# Models & datasets
-# -------------------------------
-models/
-datasets/
-
-# -------------------------------
-# Nsight Systems / profiling artifacts
-# -------------------------------
+results/
 artifacts/
 *.nsys-rep
-*.sqlite
-*.qdrep
 *.qdstrm
-*.csv
+*.sqlite
 
-# Keep lightweight generated outputs
-!artifacts/*_summary.json
-!artifacts/*_diff.json
+models/
+datasets/
+data/
+*.safetensors
+*.bin
+*.pt
 
-# -------------------------------
-# Caches
-# -------------------------------
-.cache/
-
-# -------------------------------
-# OS / editor noise
-# -------------------------------
 .DS_Store
 .vscode/
 .idea/
+.env
+*.pem
