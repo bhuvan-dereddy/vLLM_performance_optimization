@@ -1,0 +1,790 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import itertools
+import json
+import os
+import shlex
+import signal
+import sqlite3
+import subprocess
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib import request
+
+
+def load_json(path: Path) -> Any:
+    return json.loads(path.read_text())
+
+
+def write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, indent=2))
+
+
+def format_num(value: Any) -> str:
+    if value is None:
+        return "na"
+    try:
+        return f"{float(value):.6f}"
+    except Exception:
+        return "na"
+
+
+def format_delta(base: Any, value: Any) -> str:
+    try:
+        b = float(base)
+        v = float(value)
+        return f"{(v - b):.6f}"
+    except Exception:
+        return "na"
+
+
+def http_get(url: str, timeout_s: float = 2.0) -> int:
+    req = request.Request(url, method="GET")
+    with request.urlopen(req, timeout=timeout_s) as resp:
+        return resp.getcode()
+
+
+def wait_for_ready(host: str, port: int, timeout_s: float) -> bool:
+    deadline = time.time() + timeout_s
+    url = f"http://{host}:{port}/v1/models"
+    while time.time() < deadline:
+        try:
+            if http_get(url) == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def terminate_process_group(proc: subprocess.Popen, grace_s: float = 12.0) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except Exception:
+        pass
+    deadline = time.time() + grace_s
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            return
+        time.sleep(0.2)
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        pass
+
+
+def wait_for_report_finalized(trace_rep: Path, timeout_s: float = 90.0) -> None:
+    deadline = time.time() + timeout_s
+    last_size: Optional[int] = None
+    stable_for = 0.0
+
+    while time.time() < deadline:
+        if not trace_rep.exists():
+            time.sleep(0.5)
+            continue
+
+        size = trace_rep.stat().st_size
+        if last_size is None or size != last_size:
+            last_size = size
+            stable_for = 0.0
+        else:
+            stable_for += 0.5
+            if stable_for >= 2.0:
+                return
+        time.sleep(0.5)
+
+    raise SystemExit(f"Timed out waiting for finalized report: {trace_rep}")
+
+
+def table_exists(cur: sqlite3.Cursor, name: str) -> bool:
+    cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (name,))
+    return cur.fetchone() is not None
+
+
+def column_exists(cur: sqlite3.Cursor, table: str, column: str) -> bool:
+    cur.execute(f"PRAGMA table_info({table})")
+    return any(row[1] == column for row in cur.fetchall())
+
+
+def find_nsys() -> str:
+    candidates = [
+        "nsys",
+        "/opt/nvidia/nsight-systems/2025.6.1/target-linux-x64/nsys",
+        "/opt/nvidia/nsight-systems/2025.5.1/target-linux-x64/nsys",
+    ]
+    for c in candidates:
+        try:
+            p = subprocess.run([c, "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if p.returncode == 0:
+                return c
+        except Exception:
+            continue
+    raise SystemExit("nsys not found")
+
+
+def read_phase_ms(cur: sqlite3.Cursor, phase_name: str) -> Optional[float]:
+    if not table_exists(cur, "NVTX_EVENTS"):
+        return None
+    has_stringids = table_exists(cur, "StringIds")
+    if has_stringids:
+        row = cur.execute(
+            """
+            SELECT SUM(n.end - n.start)
+            FROM NVTX_EVENTS n
+            LEFT JOIN StringIds s ON s.id = n.textId
+            WHERE n.end IS NOT NULL AND n.end > n.start
+              AND (n.text = ? OR s.value = ?)
+            """,
+            (phase_name, phase_name),
+        ).fetchone()
+    else:
+        row = cur.execute(
+            """
+            SELECT SUM(n.end - n.start)
+            FROM NVTX_EVENTS n
+            WHERE n.end IS NOT NULL AND n.end > n.start
+              AND n.text = ?
+            """,
+            (phase_name,),
+        ).fetchone()
+    total_ns = row[0] if row else None
+    if total_ns is None:
+        return None
+    return float(total_ns) / 1e6
+
+
+def parse_trace_sqlite(sqlite_path: Path) -> Tuple[Dict[str, Optional[float]], Dict[str, Any]]:
+    conn = sqlite3.connect(str(sqlite_path))
+    cur = conn.cursor()
+
+    gpu_compute_ms: Optional[float] = None
+    memcpy_ms: Optional[float] = None
+    osrt_wait_ms: Optional[float] = None
+
+    top_kernels: List[Dict[str, Any]] = []
+
+    if table_exists(cur, "CUPTI_ACTIVITY_KIND_KERNEL"):
+        row = cur.execute("SELECT SUM(end - start) FROM CUPTI_ACTIVITY_KIND_KERNEL").fetchone()
+        total_kernel_ns = row[0] if row else None
+        if total_kernel_ns is not None:
+            gpu_compute_ms = float(total_kernel_ns) / 1e6
+
+        name_expr = "'<unknown_kernel_name>'"
+        join_clause = ""
+        if column_exists(cur, "CUPTI_ACTIVITY_KIND_KERNEL", "demangledName"):
+            if table_exists(cur, "StringIds"):
+                sample = cur.execute("SELECT demangledName FROM CUPTI_ACTIVITY_KIND_KERNEL LIMIT 1").fetchone()
+                if sample and sample[0] is not None and str(sample[0]).isdigit():
+                    name_expr = "s.value"
+                    join_clause = "LEFT JOIN StringIds s ON s.id = CAST(k.demangledName AS INTEGER)"
+                else:
+                    name_expr = "k.demangledName"
+            else:
+                name_expr = "k.demangledName"
+        elif column_exists(cur, "CUPTI_ACTIVITY_KIND_KERNEL", "nameId") and table_exists(cur, "StringIds"):
+            name_expr = "s.value"
+            join_clause = "LEFT JOIN StringIds s ON s.id = k.nameId"
+
+        rows = cur.execute(
+            f"""
+            SELECT {name_expr} AS name, SUM(k.end - k.start) AS total_ns
+            FROM CUPTI_ACTIVITY_KIND_KERNEL k
+            {join_clause}
+            GROUP BY name
+            ORDER BY total_ns DESC
+            LIMIT 5
+            """
+        ).fetchall()
+
+        total_ns_for_pct = float(total_kernel_ns or 0.0)
+        for name, total_ns in rows:
+            total_ms = float(total_ns or 0.0) / 1e6
+            pct = (float(total_ns or 0.0) / total_ns_for_pct * 100.0) if total_ns_for_pct > 0 else None
+            top_kernels.append(
+                {
+                    "name": str(name) if name is not None else "<unknown_kernel_name>",
+                    "total_ms": total_ms,
+                    "percent": pct,
+                }
+            )
+
+    if table_exists(cur, "CUPTI_ACTIVITY_KIND_MEMCPY"):
+        row = cur.execute("SELECT SUM(end - start) FROM CUPTI_ACTIVITY_KIND_MEMCPY").fetchone()
+        if row and row[0] is not None:
+            memcpy_ms = float(row[0]) / 1e6
+
+    if table_exists(cur, "OSRT_API") and table_exists(cur, "StringIds"):
+        row = cur.execute(
+            """
+            SELECT SUM(a.end - a.start)
+            FROM OSRT_API a
+            JOIN StringIds s ON s.id = a.nameId
+            WHERE LOWER(s.value) LIKE '%wait%'
+               OR LOWER(s.value) LIKE '%poll%'
+               OR LOWER(s.value) LIKE '%sleep%'
+               OR LOWER(s.value) LIKE '%futex%'
+               OR LOWER(s.value) LIKE '%cond%'
+               OR LOWER(s.value) LIKE '%select%'
+            """
+        ).fetchone()
+        if row and row[0] is not None:
+            osrt_wait_ms = float(row[0]) / 1e6
+
+    nvtx = {
+        "get_batch_ms": read_phase_ms(cur, "get_batch"),
+        "prefill_ms": read_phase_ms(cur, "prefill"),
+        "decode_ms": read_phase_ms(cur, "decode"),
+    }
+
+    conn.close()
+
+    summary = {
+        "gpu_compute_ms": gpu_compute_ms,
+        "memcpy_ms": memcpy_ms,
+        "osrt_wait_ms": osrt_wait_ms,
+        "top_kernels": top_kernels,
+    }
+    return nvtx, summary
+
+
+def resolve_server(cfg: Dict[str, Any]) -> Tuple[List[str], Dict[str, str], str, int, float]:
+    if "serve_cmd" in cfg:
+        raw = cfg["serve_cmd"]
+        if isinstance(raw, str):
+            serve_cmd = shlex.split(raw)
+        elif isinstance(raw, list):
+            serve_cmd = [str(x) for x in raw]
+        else:
+            raise SystemExit("serve_cmd must be string or list")
+    else:
+        server = cfg.get("server", {})
+        serve_cmd = [
+            "vllm",
+            "serve",
+            str(server["model_dir"]),
+            "--host",
+            str(server.get("host", "127.0.0.1")),
+            "--port",
+            str(server.get("port", 8000)),
+            "--dtype",
+            str(server.get("dtype", "float16")),
+            "--gpu-memory-utilization",
+            str(server.get("gpu_memory_utilization", 0.9)),
+            "--max-model-len",
+            str(server.get("max_model_len", 2048)),
+        ]
+
+    env = dict(os.environ)
+    env_cfg = cfg.get("env", {})
+    if not env_cfg and isinstance(cfg.get("server"), dict):
+        env_cfg = cfg["server"].get("env", {})
+    for k, v in (env_cfg or {}).items():
+        env[str(k)] = str(v)
+
+    host = cfg.get("workload", {}).get("host")
+    port = cfg.get("workload", {}).get("port")
+    timeout_s = cfg.get("server", {}).get("startup_timeout_s", 240)
+
+    if host is None:
+        host = _arg_value(serve_cmd, "--host", default="127.0.0.1")
+    if port is None:
+        port = int(_arg_value(serve_cmd, "--port", default="8000"))
+
+    return serve_cmd, env, str(host), int(port), float(timeout_s)
+
+
+def _arg_value(cmd: Sequence[str], key: str, default: str) -> str:
+    for i, tok in enumerate(cmd):
+        if tok == key and i + 1 < len(cmd):
+            return cmd[i + 1]
+    return default
+
+
+def resolve_model_name(cmd: Sequence[str], cfg: Dict[str, Any]) -> str:
+    if len(cmd) >= 3 and cmd[0] == "vllm" and cmd[1] == "serve":
+        return str(cmd[2])
+    if "--model" in cmd:
+        return _arg_value(cmd, "--model", default="models/tinyllama")
+    server = cfg.get("server", {})
+    if "model_dir" in server:
+        return str(server["model_dir"])
+    return "models/tinyllama"
+
+
+def get_knob_flags(knobs: List[Dict[str, Any]], bits: Sequence[int]) -> Tuple[str, List[str], Dict[str, bool]]:
+    mask = "".join(str(int(b)) for b in bits)
+    flags: List[str] = []
+    assignment: Dict[str, bool] = {}
+    for b, knob in zip(bits, knobs):
+        name = str(knob["name"])
+        on_flags = [str(x) for x in knob.get("on_flags", [])]
+        off_flags = [str(x) for x in knob.get("off_flags", [])]
+        if not on_flags and "flag" in knob and "on_value" in knob:
+            on_flags = [str(knob["flag"]), str(knob["on_value"])]
+        elif not on_flags and "flag" in knob and knob.get("type") == "bool":
+            on_flags = [str(knob["flag"])]
+        assignment[name] = bool(b)
+        flags.extend(on_flags if b else off_flags)
+    return mask, flags, assignment
+
+
+def parse_client_metrics(client_raw: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    stats = client_raw.get("stats") or {}
+    run = client_raw.get("run") or {}
+    total = int(run.get("num_requests", 0) or 0)
+    failed = int(run.get("failed_requests", 0) or 0)
+    error_rate: Optional[float]
+    if total > 0:
+        error_rate = failed / float(total)
+    else:
+        error_rate = None
+
+    def as_float(v: Any) -> Optional[float]:
+        try:
+            if v is None:
+                return None
+            return float(v)
+        except Exception:
+            return None
+
+    return {
+        "p50_latency_ms": as_float(stats.get("p50_total_ms")),
+        "p95_latency_ms": as_float(stats.get("p95_total_ms")),
+        "tokens_per_s": as_float(stats.get("throughput_tok_s")),
+        "error_rate": error_rate,
+    }
+
+
+@dataclass
+class EvaluationResult:
+    run_dir: Path
+    ok: bool
+    metrics: Dict[str, Optional[float]]
+    nvtx_phases: Dict[str, Optional[float]]
+    trace_summary: Dict[str, Any]
+    resolved_cmd: List[str]
+    resolved_env: Dict[str, str]
+
+
+def evaluate(
+    cfg: Dict[str, Any],
+    run_dir: Path,
+    knob_flags: List[str],
+    assignment: Dict[str, bool],
+    profile: bool,
+) -> EvaluationResult:
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    serve_cmd, env, host, port, startup_timeout_s = resolve_server(cfg)
+    resolved_cmd = serve_cmd + knob_flags
+
+    logs_path = run_dir / "logs.txt"
+    client_raw_path = run_dir / "client_raw.json"
+
+    nsys_cmd_prefix: List[str] = []
+    if profile:
+        nsys = find_nsys()
+        trace = cfg.get("nsys", {}).get("trace", "cuda,nvtx,osrt")
+        trace_prefix = run_dir / "trace"
+        nsys_cmd_prefix = [
+            nsys,
+            "profile",
+            "--force-overwrite=true",
+            f"--trace={trace}",
+            "--sample=none",
+            "--cpuctxsw=none",
+            "-o",
+            str(trace_prefix),
+        ]
+
+    proc: Optional[subprocess.Popen] = None
+    ok = False
+    metrics = {
+        "p50_latency_ms": None,
+        "p95_latency_ms": None,
+        "tokens_per_s": None,
+        "error_rate": 1.0,
+    }
+    nvtx_phases = {"get_batch_ms": None, "prefill_ms": None, "decode_ms": None}
+    trace_summary = {
+        "gpu_compute_ms": None,
+        "memcpy_ms": None,
+        "osrt_wait_ms": None,
+        "top_kernels": [],
+    }
+
+    with logs_path.open("wb") as logs_f:
+        proc = subprocess.Popen(
+            nsys_cmd_prefix + resolved_cmd,
+            stdout=logs_f,
+            stderr=subprocess.STDOUT,
+            env=env,
+            preexec_fn=os.setsid,
+        )
+
+        try:
+            if not wait_for_ready(host, port, startup_timeout_s):
+                raise RuntimeError("server_not_ready")
+
+            workload = cfg.get("workload", {})
+            dataset = cfg.get("dataset", {})
+            prompts = dataset.get("path") or dataset.get("prompts_jsonl")
+            if not prompts:
+                raise RuntimeError("dataset.path or dataset.prompts_jsonl missing")
+
+            endpoint = workload.get("endpoint", "/v1/chat/completions")
+            num_requests = int(workload.get("request_count", workload.get("num_requests", 0)))
+            if num_requests <= 0:
+                num_requests = int(cfg.get("experiment", {}).get("final_requests", 0))
+            if num_requests <= 0:
+                num_requests = int(cfg.get("experiment", {}).get("screening_requests", 20))
+
+            client_cmd = [
+                "python",
+                "scripts/bench_client.py",
+                "--host",
+                host,
+                "--port",
+                str(port),
+                "--endpoint",
+                str(endpoint),
+                "--model",
+                resolve_model_name(resolved_cmd, cfg),
+                "--prompts",
+                str(prompts),
+                "--num-requests",
+                str(num_requests),
+                "--concurrency",
+                str(workload.get("concurrency", 4)),
+                "--max-new-tokens",
+                str(workload.get("max_new_tokens", 64)),
+                "--temperature",
+                str(workload.get("temperature", 0.0)),
+                "--timeout-s",
+                str(workload.get("timeout_s", 180.0)),
+                "--out",
+                str(client_raw_path),
+            ]
+
+            subprocess.run(client_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+            raw = load_json(client_raw_path)
+            metrics = parse_client_metrics(raw)
+            ok = (metrics.get("error_rate") == 0.0)
+
+        except Exception:
+            ok = False
+        finally:
+            if proc is not None:
+                terminate_process_group(proc)
+
+    write_json(
+        run_dir / "client_metrics.json",
+        {
+            "p50_latency_ms": metrics.get("p50_latency_ms"),
+            "p95_latency_ms": metrics.get("p95_latency_ms"),
+            "tokens_per_s": metrics.get("tokens_per_s"),
+            "error_rate": metrics.get("error_rate"),
+        },
+    )
+
+    write_json(
+        run_dir / "config.json",
+        {
+            "resolved_server_cmd": resolved_cmd,
+            "resolved_env": {k: v for k, v in env.items() if k in (cfg.get("env") or {}) or k in ((cfg.get("server") or {}).get("env") or {})},
+            "assignment": assignment,
+            "profile": profile,
+        },
+    )
+
+    if profile:
+        trace_rep = run_dir / "trace.nsys-rep"
+        wait_for_report_finalized(trace_rep)
+
+        nsys = find_nsys()
+        sqlite_path = run_dir / "trace.sqlite"
+        backoffs = [1, 2, 4, 8, 8, 8]
+        export_ok = False
+        for delay_s in backoffs:
+            proc = subprocess.run(
+                [nsys, "export", "--type", "sqlite", "--output", str(sqlite_path), str(trace_rep)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            with logs_path.open("ab") as logs_f:
+                if proc.stdout:
+                    logs_f.write(proc.stdout)
+                if proc.stderr:
+                    logs_f.write(proc.stderr)
+
+            if proc.returncode == 0 and sqlite_path.exists():
+                export_ok = True
+                break
+            time.sleep(delay_s)
+
+        if not export_ok:
+            raise SystemExit(f"Failed to export sqlite for {trace_rep}")
+
+        nvtx_phases, trace_summary = parse_trace_sqlite(sqlite_path)
+        write_json(run_dir / "nvtx_phases.json", nvtx_phases)
+        write_json(run_dir / "trace_summary.json", trace_summary)
+
+    return EvaluationResult(
+        run_dir=run_dir,
+        ok=ok,
+        metrics=metrics,
+        nvtx_phases=nvtx_phases,
+        trace_summary=trace_summary,
+        resolved_cmd=resolved_cmd,
+        resolved_env=env,
+    )
+
+
+def choose_best(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    valid = [r for r in records if r.get("error_rate") == 0.0 and r.get("p50_latency_ms") is not None]
+    if not valid:
+        raise SystemExit("No valid combinations with error_rate == 0")
+
+    def key_fn(r: Dict[str, Any]) -> Tuple[float, float, float]:
+        p50 = float(r.get("p50_latency_ms"))
+        p95 = float(r.get("p95_latency_ms")) if r.get("p95_latency_ms") is not None else float("inf")
+        tps = float(r.get("tokens_per_s")) if r.get("tokens_per_s") is not None else float("-inf")
+        return (p50, p95, -tps)
+
+    return sorted(valid, key=key_fn)[0]
+
+
+def print_search_output(
+    rows: List[Dict[str, Any]],
+    baseline_metrics: Dict[str, Optional[float]],
+    best_row: Dict[str, Any],
+    baseline_trace: Dict[str, Any],
+    best_trace: Dict[str, Any],
+    baseline_nvtx: Dict[str, Any],
+    best_nvtx: Dict[str, Any],
+) -> None:
+    print("trial,knob_mask,p50_latency_ms,p95_latency_ms,tokens_per_s,error_rate,delta_p50_ms")
+    b_p50 = baseline_metrics.get("p50_latency_ms")
+    for r in rows:
+        print(
+            ",".join(
+                [
+                    str(r["trial"]),
+                    str(r["knob_mask"]),
+                    format_num(r.get("p50_latency_ms")),
+                    format_num(r.get("p95_latency_ms")),
+                    format_num(r.get("tokens_per_s")),
+                    format_num(r.get("error_rate")),
+                    format_delta(b_p50, r.get("p50_latency_ms")),
+                ]
+            )
+        )
+
+    print(
+        "BEST,knob_mask={mask},p50_latency_ms={p50},delta_p50_ms={delta}".format(
+            mask=best_row["knob_mask"],
+            p50=format_num(best_row.get("p50_latency_ms")),
+            delta=format_delta(b_p50, best_row.get("p50_latency_ms")),
+        )
+    )
+
+    def line(label: str, b: Any, v: Any) -> str:
+        return f"{label}: {format_num(b)} -> {format_num(v)} ({format_delta(b, v)})"
+
+    print("BEST_VS_BASELINE")
+    print(line("p50_latency_ms", baseline_metrics.get("p50_latency_ms"), best_row.get("p50_latency_ms")))
+    print(line("p95_latency_ms", baseline_metrics.get("p95_latency_ms"), best_row.get("p95_latency_ms")))
+    print(line("tokens_per_s", baseline_metrics.get("tokens_per_s"), best_row.get("tokens_per_s")))
+    print("")
+    print(line("gpu_compute_ms", baseline_trace.get("gpu_compute_ms"), best_trace.get("gpu_compute_ms")))
+    print(line("memcpy_ms", baseline_trace.get("memcpy_ms"), best_trace.get("memcpy_ms")))
+    print(line("osrt_wait_ms", baseline_trace.get("osrt_wait_ms"), best_trace.get("osrt_wait_ms")))
+    print("")
+    print(line("nvtx_get_batch_ms", baseline_nvtx.get("get_batch_ms"), best_nvtx.get("get_batch_ms")))
+    print(line("nvtx_prefill_ms", baseline_nvtx.get("prefill_ms"), best_nvtx.get("prefill_ms")))
+    print(line("nvtx_decode_ms", baseline_nvtx.get("decode_ms"), best_nvtx.get("decode_ms")))
+    print("")
+
+    print("TOP_KERNELS_BASELINE")
+    b_top = baseline_trace.get("top_kernels", [])
+    for i in range(5):
+        if i < len(b_top):
+            item = b_top[i]
+            print(f"{i+1}) {item.get('name','na')},{format_num(item.get('total_ms'))},{format_num(item.get('percent'))}")
+        else:
+            print(f"{i+1}) na,na,na")
+
+    print("")
+    print("TOP_KERNELS_BEST")
+    v_top = best_trace.get("top_kernels", [])
+    for i in range(5):
+        if i < len(v_top):
+            item = v_top[i]
+            print(f"{i+1}) {item.get('name','na')},{format_num(item.get('total_ms'))},{format_num(item.get('percent'))}")
+        else:
+            print(f"{i+1}) na,na,na")
+
+
+def write_summary_csv(path: Path, rows: List[Dict[str, Any]], baseline_p50: Optional[float]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["trial", "knob_mask", "p50_latency_ms", "p95_latency_ms", "tokens_per_s", "error_rate", "delta_p50_ms"])
+        for r in rows:
+            w.writerow(
+                [
+                    r["trial"],
+                    r["knob_mask"],
+                    r.get("p50_latency_ms"),
+                    r.get("p95_latency_ms"),
+                    r.get("tokens_per_s"),
+                    r.get("error_rate"),
+                    (None if baseline_p50 is None or r.get("p50_latency_ms") is None else (float(r["p50_latency_ms"]) - float(baseline_p50))),
+                ]
+            )
+
+
+class BruteForceSearch:
+    def __init__(self, cfg: Dict[str, Any], base_dir: Path) -> None:
+        self.cfg = cfg
+        self.base_dir = base_dir
+
+    def run(self, baseline_metrics: Dict[str, Optional[float]]) -> None:
+        knobs = self.cfg.get("knobs", [])
+        n = len(knobs)
+        rows: List[Dict[str, Any]] = []
+        all_trials: List[Dict[str, Any]] = []
+
+        for trial, bits in enumerate(itertools.product([0, 1], repeat=n)):
+            mask, flags, assignment = get_knob_flags(knobs, bits)
+            trial_dir = self.base_dir / "trials" / f"trial_{trial:04d}_{mask}"
+            result = evaluate(self.cfg, trial_dir, flags, assignment, profile=False)
+            row = {
+                "trial": trial,
+                "knob_mask": mask,
+                "assignment": assignment,
+                "flags": flags,
+                "p50_latency_ms": result.metrics.get("p50_latency_ms"),
+                "p95_latency_ms": result.metrics.get("p95_latency_ms"),
+                "tokens_per_s": result.metrics.get("tokens_per_s"),
+                "error_rate": result.metrics.get("error_rate"),
+            }
+            rows.append(row)
+            all_trials.append(
+                {
+                    "trial": trial,
+                    "knob_mask": mask,
+                    "assignment": assignment,
+                    "flags": flags,
+                    "metrics": result.metrics,
+                    "run_dir": str(trial_dir),
+                }
+            )
+
+        best_row = choose_best(rows)
+
+        best_dir = self.base_dir / "best"
+        _, best_flags, best_assignment = get_knob_flags(
+            knobs, [int(c) for c in str(best_row["knob_mask"])]
+        )
+        best_eval = evaluate(self.cfg, best_dir, best_flags, best_assignment, profile=True)
+
+        best_config = {
+            "knob_mask": best_row["knob_mask"],
+            "assignment": best_assignment,
+            "flags": best_flags,
+            "metrics": best_eval.metrics,
+            "resolved_server_cmd": best_eval.resolved_cmd,
+            "resolved_env": {k: v for k, v in best_eval.resolved_env.items() if k in (self.cfg.get("env") or {}) or k in ((self.cfg.get("server") or {}).get("env") or {})},
+        }
+
+        write_summary_csv(self.base_dir / "summary.csv", rows, baseline_metrics.get("p50_latency_ms"))
+        write_json(
+            self.base_dir / "summary.json",
+            {
+                "objective": {"primary": "p50_latency_ms", "tie_breakers": ["p95_latency_ms", "tokens_per_s"]},
+                "trials": all_trials,
+                "best": best_config,
+            },
+        )
+        write_json(self.base_dir / "best_config.json", best_config)
+        (self.base_dir / "best_command.sh").write_text(
+            "#!/usr/bin/env bash\n"
+            + " ".join(shlex.quote(x) for x in best_eval.resolved_cmd)
+            + "\n"
+        )
+
+        baseline_metrics_live = load_json(Path("results/baseline/client_metrics.json"))
+        baseline_trace = load_json(Path("results/baseline/trace_summary.json")) if Path("results/baseline/trace_summary.json").exists() else {"gpu_compute_ms": None, "memcpy_ms": None, "osrt_wait_ms": None, "top_kernels": []}
+        baseline_nvtx = load_json(Path("results/baseline/nvtx_phases.json")) if Path("results/baseline/nvtx_phases.json").exists() else {"get_batch_ms": None, "prefill_ms": None, "decode_ms": None}
+
+        print_search_output(
+            rows=rows,
+            baseline_metrics=baseline_metrics_live,
+            best_row=best_eval.metrics | {"knob_mask": best_row["knob_mask"]},
+            baseline_trace=baseline_trace,
+            best_trace=best_eval.trace_summary,
+            baseline_nvtx=baseline_nvtx,
+            best_nvtx=best_eval.nvtx_phases,
+        )
+
+
+def run_baseline(cfg: Dict[str, Any]) -> None:
+    baseline_dir = Path("results/baseline")
+    mask = "0" * len(cfg.get("knobs", []))
+    _, flags, assignment = get_knob_flags(cfg.get("knobs", []), [0] * len(cfg.get("knobs", [])))
+    result = evaluate(cfg, baseline_dir, flags, assignment, profile=True)
+
+    write_json(
+        baseline_dir / "config.json",
+        {
+            "knob_mask": mask,
+            "assignment": assignment,
+            "flags": flags,
+            "resolved_server_cmd": result.resolved_cmd,
+            "resolved_env": {k: v for k, v in result.resolved_env.items() if k in (cfg.get("env") or {}) or k in ((cfg.get("server") or {}).get("env") or {})},
+        },
+    )
+
+    if not (baseline_dir / "trace.nsys-rep").exists():
+        raise SystemExit("Baseline profiling failed: trace.nsys-rep missing")
+
+    print("BASELINE_DONE")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="optimizations.json")
+    args = ap.parse_args()
+
+    cfg_path = Path(args.config)
+    if not cfg_path.exists() and args.config == "optimizations.json":
+        fallback = Path("configs/optimizations.json")
+        if fallback.exists():
+            cfg_path = fallback
+
+    cfg = load_json(cfg_path)
+
+    baseline_dir = Path("results/baseline")
+    if not baseline_dir.exists():
+        run_baseline(cfg)
+        return
+
+    search_dir = Path("results/search/latest")
+    search_dir.mkdir(parents=True, exist_ok=True)
+
+    baseline_metrics = load_json(baseline_dir / "client_metrics.json")
+    BruteForceSearch(cfg, search_dir).run(baseline_metrics)
+
+
+if __name__ == "__main__":
+    main()
