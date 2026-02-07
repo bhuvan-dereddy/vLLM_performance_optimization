@@ -687,25 +687,43 @@ class BruteForceSearch:
                     "flags": flags,
                     "metrics": result.metrics,
                     "run_dir": str(trial_dir),
+                    "resolved_server_cmd": result.resolved_cmd,
+                    "resolved_env": result.resolved_env,
                 }
             )
 
         best_row = choose_best(rows)
+        best_trial = next((trial for trial in all_trials if trial.get("trial") == best_row.get("trial")), None)
+        if best_trial is None:
+            raise SystemExit("Failed to resolve best trial metadata")
 
-        best_dir = self.base_dir / "best"
-        _, best_flags, best_assignment = get_knob_flags(
-            knobs, [int(c) for c in str(best_row["knob_mask"])]
-        )
-        best_eval = evaluate(self.cfg, best_dir, best_flags, best_assignment, profile=True)
+        best_metrics = best_trial["metrics"]
+        best_run_dir = best_trial["run_dir"]
+        best_flags = best_trial["flags"]
+        best_assignment = best_trial["assignment"]
 
         best_config = {
             "knob_mask": best_row["knob_mask"],
             "assignment": best_assignment,
             "flags": best_flags,
-            "metrics": best_eval.metrics,
-            "resolved_server_cmd": best_eval.resolved_cmd,
-            "resolved_env": {k: v for k, v in best_eval.resolved_env.items() if k in (self.cfg.get("env") or {}) or k in ((self.cfg.get("server") or {}).get("env") or {})},
+            "metrics": best_metrics,
+            "resolved_server_cmd": best_trial.get("resolved_server_cmd", []),
+            "resolved_env": {
+                k: v
+                for k, v in (best_trial.get("resolved_env", {}) or {}).items()
+                if k in (self.cfg.get("env") or {}) or k in ((self.cfg.get("server") or {}).get("env") or {})
+            },
         }
+
+        import os
+        import shutil
+
+        os.makedirs("results/best", exist_ok=True)
+
+        shutil.copy(
+            os.path.join(best_run_dir, "client_raw.json"),
+            "results/best/client_raw.json"
+        )
 
         write_summary_csv(self.base_dir / "summary.csv", rows, baseline_metrics.get("p50_latency_ms"))
         write_json(
@@ -719,22 +737,24 @@ class BruteForceSearch:
         write_json(self.base_dir / "best_config.json", best_config)
         (self.base_dir / "best_command.sh").write_text(
             "#!/usr/bin/env bash\n"
-            + " ".join(shlex.quote(x) for x in best_eval.resolved_cmd)
+            + " ".join(shlex.quote(x) for x in best_config["resolved_server_cmd"])
             + "\n"
         )
 
         baseline_metrics_live = load_json(Path("results/baseline/client_metrics.json"))
         baseline_trace = load_json(Path("results/baseline/trace_summary.json")) if Path("results/baseline/trace_summary.json").exists() else {"gpu_compute_ms": None, "memcpy_ms": None, "osrt_wait_ms": None, "top_kernels": []}
         baseline_nvtx = load_json(Path("results/baseline/nvtx_phases.json")) if Path("results/baseline/nvtx_phases.json").exists() else {"get_batch_ms": None, "prefill_ms": None, "decode_ms": None}
+        best_trace = load_json(Path(best_run_dir) / "trace_summary.json") if (Path(best_run_dir) / "trace_summary.json").exists() else {"gpu_compute_ms": None, "memcpy_ms": None, "osrt_wait_ms": None, "top_kernels": []}
+        best_nvtx = load_json(Path(best_run_dir) / "nvtx_phases.json") if (Path(best_run_dir) / "nvtx_phases.json").exists() else {"get_batch_ms": None, "prefill_ms": None, "decode_ms": None}
 
         print_search_output(
             rows=rows,
             baseline_metrics=baseline_metrics_live,
-            best_row=best_eval.metrics | {"knob_mask": best_row["knob_mask"]},
+            best_row=best_metrics | {"knob_mask": best_row["knob_mask"]},
             baseline_trace=baseline_trace,
-            best_trace=best_eval.trace_summary,
+            best_trace=best_trace,
             baseline_nvtx=baseline_nvtx,
-            best_nvtx=best_eval.nvtx_phases,
+            best_nvtx=best_nvtx,
         )
 
 
