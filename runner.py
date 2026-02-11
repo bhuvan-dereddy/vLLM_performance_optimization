@@ -429,11 +429,21 @@ def evaluate(
             preexec_fn=os.setsid,
         )
 
+        workload = cfg.get("workload", {})
+        if "--max-model-len" in resolved_cmd:
+            client_max_model_len = int(_arg_value(resolved_cmd, "--max-model-len", "2048"))
+        else:
+            client_max_model_len = int(cfg.get("server", {}).get("max_model_len", 2048))
+        client_max_new_tokens = int(workload.get("max_new_tokens", 64))
+        if "max_input_tokens" in workload:
+            client_max_input_tokens = int(workload["max_input_tokens"])
+        else:
+            client_max_input_tokens = max(1, client_max_model_len - client_max_new_tokens - 32)
+
         try:
             if not wait_for_ready(host, port, startup_timeout_s):
                 raise RuntimeError("server_not_ready")
 
-            workload = cfg.get("workload", {})
             dataset = cfg.get("dataset", {})
             prompts = dataset.get("path") or dataset.get("prompts_jsonl")
             if not prompts:
@@ -464,7 +474,11 @@ def evaluate(
                 "--concurrency",
                 str(workload.get("concurrency", 4)),
                 "--max-new-tokens",
-                str(workload.get("max_new_tokens", 64)),
+                str(client_max_new_tokens),
+                "--max-model-len",
+                str(client_max_model_len),
+                "--max-input-tokens",
+                str(client_max_input_tokens),
                 "--temperature",
                 str(workload.get("temperature", 0.0)),
                 "--timeout-s",
@@ -502,6 +516,12 @@ def evaluate(
             "resolved_env": {k: v for k, v in env.items() if k in (cfg.get("env") or {}) or k in ((cfg.get("server") or {}).get("env") or {})},
             "assignment": assignment,
             "profile": profile,
+            "client_effective": {
+                "max_model_len": client_max_model_len,
+                "max_new_tokens": client_max_new_tokens,
+                "max_input_tokens": client_max_input_tokens,
+                "safety_buffer_tokens": 32,
+            },
         },
     )
 
@@ -715,15 +735,15 @@ class BruteForceSearch:
             },
         }
 
-        import os
         import shutil
 
-        os.makedirs("results/best", exist_ok=True)
+        results_root = Path("results")
+        baseline_dir = results_root / "baseline"
+        best_dir = results_root / "best"
+        best_dir.mkdir(parents=True, exist_ok=True)
 
-        shutil.copy(
-            os.path.join(best_run_dir, "client_raw.json"),
-            "results/best/client_raw.json"
-        )
+        shutil.copy(Path(best_run_dir) / "client_raw.json", best_dir / "client_raw.json")
+        shutil.copy(Path(best_run_dir) / "client_metrics.json", best_dir / "client_metrics.json")
 
         write_summary_csv(self.base_dir / "summary.csv", rows, baseline_metrics.get("p50_latency_ms"))
         write_json(
@@ -741,9 +761,9 @@ class BruteForceSearch:
             + "\n"
         )
 
-        baseline_metrics_live = load_json(Path("results/baseline/client_metrics.json"))
-        baseline_trace = load_json(Path("results/baseline/trace_summary.json")) if Path("results/baseline/trace_summary.json").exists() else {"gpu_compute_ms": None, "memcpy_ms": None, "osrt_wait_ms": None, "top_kernels": []}
-        baseline_nvtx = load_json(Path("results/baseline/nvtx_phases.json")) if Path("results/baseline/nvtx_phases.json").exists() else {"get_batch_ms": None, "prefill_ms": None, "decode_ms": None}
+        baseline_metrics_live = load_json(baseline_dir / "client_metrics.json")
+        baseline_trace = load_json(baseline_dir / "trace_summary.json") if (baseline_dir / "trace_summary.json").exists() else {"gpu_compute_ms": None, "memcpy_ms": None, "osrt_wait_ms": None, "top_kernels": []}
+        baseline_nvtx = load_json(baseline_dir / "nvtx_phases.json") if (baseline_dir / "nvtx_phases.json").exists() else {"get_batch_ms": None, "prefill_ms": None, "decode_ms": None}
         best_trace = load_json(Path(best_run_dir) / "trace_summary.json") if (Path(best_run_dir) / "trace_summary.json").exists() else {"gpu_compute_ms": None, "memcpy_ms": None, "osrt_wait_ms": None, "top_kernels": []}
         best_nvtx = load_json(Path(best_run_dir) / "nvtx_phases.json") if (Path(best_run_dir) / "nvtx_phases.json").exists() else {"get_batch_ms": None, "prefill_ms": None, "decode_ms": None}
 
@@ -759,20 +779,26 @@ class BruteForceSearch:
 
 
 def run_baseline(cfg: Dict[str, Any]) -> None:
-    baseline_dir = Path("results/baseline")
+    results_root = Path("results")
+    baseline_dir = results_root / "baseline"
     mask = "0" * len(cfg.get("knobs", []))
     _, flags, assignment = get_knob_flags(cfg.get("knobs", []), [0] * len(cfg.get("knobs", [])))
     result = evaluate(cfg, baseline_dir, flags, assignment, profile=True)
 
-    write_json(
-        baseline_dir / "config.json",
+    config_path = baseline_dir / "config.json"
+    merged_config = load_json(config_path) if config_path.exists() else {}
+    merged_config.update(
         {
             "knob_mask": mask,
             "assignment": assignment,
             "flags": flags,
             "resolved_server_cmd": result.resolved_cmd,
             "resolved_env": {k: v for k, v in result.resolved_env.items() if k in (cfg.get("env") or {}) or k in ((cfg.get("server") or {}).get("env") or {})},
-        },
+        }
+    )
+    write_json(
+        config_path,
+        merged_config,
     )
 
     if not (baseline_dir / "trace.nsys-rep").exists():
@@ -794,7 +820,8 @@ def main() -> None:
 
     cfg = load_json(cfg_path)
 
-    baseline_dir = Path("results/baseline")
+    results_root = Path("results")
+    baseline_dir = results_root / "baseline"
     if not baseline_dir.exists():
         run_baseline(cfg)
         return
