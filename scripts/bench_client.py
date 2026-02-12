@@ -281,14 +281,19 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
         else 0.0
     )
 
-    throughput_tok_s = (total_chunks / wall_s) if wall_s > 0 else 0.0
+    throughput_chunks_s = (total_chunks / wall_s) if wall_s > 0 else 0.0
+    requests_per_s = (len(ok_results) / wall_s) if wall_s > 0 else 0.0
+    avg_output_chunks_per_request = (total_chunks / len(ok_results)) if len(ok_results) > 0 else 0.0
 
     stats = {
         "p50_total_ms": pctl(total_ms, 50),
         "p95_total_ms": pctl(total_ms, 95),
         "p50_ttft_ms": pctl(ttft_ms, 50),
         "p95_ttft_ms": pctl(ttft_ms, 95),
-        "throughput_tok_s": round(float(throughput_tok_s), 6),
+        "throughput_chunks_s": round(float(throughput_chunks_s), 6),
+        "total_output_chunks": total_chunks,
+        "requests_per_s": round(float(requests_per_s), 6),
+        "avg_output_chunks_per_request": round(float(avg_output_chunks_per_request), 6),
         "wall_s": round(float(wall_s), 6),
     }
 

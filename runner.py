@@ -357,7 +357,7 @@ def parse_client_metrics(client_raw: Dict[str, Any]) -> Dict[str, Optional[float
     return {
         "p50_latency_ms": as_float(stats.get("p50_total_ms")),
         "p95_latency_ms": as_float(stats.get("p95_total_ms")),
-        "tokens_per_s": as_float(stats.get("throughput_tok_s")),
+        "tokens_per_s": as_float(stats.get("throughput_chunks_s")),
         "error_rate": error_rate,
     }
 
