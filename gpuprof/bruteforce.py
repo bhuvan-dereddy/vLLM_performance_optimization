@@ -3,9 +3,9 @@ import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from gpuprof.constants import RESULTS_ROOT
 from gpuprof.evaluate import evaluate
 from gpuprof.io_utils import load_json, write_json
+from gpuprof.paths import baseline_dir as get_baseline_dir, best_dir as get_best_dir
 from gpuprof.search import choose_best, print_search_output, write_summary_csv
 from gpuprof.server_cmd import get_knob_flags
 
@@ -78,8 +78,8 @@ class BruteForceSearch:
 
         import shutil
 
-        baseline_dir = RESULTS_ROOT / "baseline"
-        best_dir = RESULTS_ROOT / "best"
+        baseline_dir = get_baseline_dir()
+        best_dir = get_best_dir()
         best_dir.mkdir(parents=True, exist_ok=True)
 
         shutil.copy(Path(best_run_dir) / "client_raw.json", best_dir / "client_raw.json")
