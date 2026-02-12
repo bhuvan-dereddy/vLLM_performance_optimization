@@ -297,22 +297,6 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
         "wall_s": round(float(wall_s), 6),
     }
 
-    run = {
-        "host": args.host,
-        "port": args.port,
-        "endpoint": args.endpoint,
-        "model": args.model,
-        "prompts_file": str(prompts_path),
-        "num_requests": args.num_requests,
-        "concurrency": args.concurrency,
-        "max_new_tokens": args.max_new_tokens,
-        "temperature": args.temperature,
-        "timeout_s": args.timeout_s,
-        "ok_requests": len(ok_results),
-        "failed_requests": len(results) - len(ok_results),
-        "total_elapsed_s": round(t1 - t0, 6),
-    }
-
     # Save a small sample of failures (helps debugging)
     failures = []
     for r in results:
@@ -328,7 +312,9 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
             break
 
     out = {
-        "run": run,
+        "num_requests": args.num_requests,
+        "ok_requests": len(ok_results),
+        "failed_requests": len(results) - len(ok_results),
         "stats": stats,
         "failures_sample": failures,
     }

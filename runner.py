@@ -337,9 +337,8 @@ def get_knob_flags(knobs: List[Dict[str, Any]], bits: Sequence[int]) -> Tuple[st
 
 def parse_client_metrics(client_raw: Dict[str, Any]) -> Dict[str, Optional[float]]:
     stats = client_raw.get("stats") or {}
-    run = client_raw.get("run") or {}
-    total = int(run.get("num_requests", 0) or 0)
-    failed = int(run.get("failed_requests", 0) or 0)
+    total = int(client_raw.get("num_requests", 0) or 0)
+    failed = int(client_raw.get("failed_requests", 0) or 0)
     error_rate: Optional[float]
     if total > 0:
         error_rate = failed / float(total)
@@ -744,6 +743,10 @@ class BruteForceSearch:
 
         shutil.copy(Path(best_run_dir) / "client_raw.json", best_dir / "client_raw.json")
         shutil.copy(Path(best_run_dir) / "client_metrics.json", best_dir / "client_metrics.json")
+        best_profile_dir = best_dir / "profile_tmp"
+        evaluate(self.cfg, best_profile_dir, best_flags, best_assignment, profile=True)
+        shutil.copy(best_profile_dir / "trace_summary.json", best_dir / "trace_summary.json")
+        shutil.copy(best_profile_dir / "nvtx_phases.json", best_dir / "nvtx_phases.json")
 
         write_summary_csv(self.base_dir / "summary.csv", rows, baseline_metrics.get("p50_latency_ms"))
         write_json(
@@ -764,8 +767,8 @@ class BruteForceSearch:
         baseline_metrics_live = load_json(baseline_dir / "client_metrics.json")
         baseline_trace = load_json(baseline_dir / "trace_summary.json") if (baseline_dir / "trace_summary.json").exists() else {"gpu_compute_ms": None, "memcpy_ms": None, "osrt_wait_ms": None, "top_kernels": []}
         baseline_nvtx = load_json(baseline_dir / "nvtx_phases.json") if (baseline_dir / "nvtx_phases.json").exists() else {"get_batch_ms": None, "prefill_ms": None, "decode_ms": None}
-        best_trace = load_json(Path(best_run_dir) / "trace_summary.json") if (Path(best_run_dir) / "trace_summary.json").exists() else {"gpu_compute_ms": None, "memcpy_ms": None, "osrt_wait_ms": None, "top_kernels": []}
-        best_nvtx = load_json(Path(best_run_dir) / "nvtx_phases.json") if (Path(best_run_dir) / "nvtx_phases.json").exists() else {"get_batch_ms": None, "prefill_ms": None, "decode_ms": None}
+        best_trace = load_json(best_dir / "trace_summary.json") if (best_dir / "trace_summary.json").exists() else {"gpu_compute_ms": None, "memcpy_ms": None, "osrt_wait_ms": None, "top_kernels": []}
+        best_nvtx = load_json(best_dir / "nvtx_phases.json") if (best_dir / "nvtx_phases.json").exists() else {"get_batch_ms": None, "prefill_ms": None, "decode_ms": None}
 
         print_search_output(
             rows=rows,
