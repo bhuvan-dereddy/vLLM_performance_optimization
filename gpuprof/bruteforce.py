@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Optional
 from gpuprof.evaluate import evaluate
 from gpuprof.io_utils import load_json, write_json
 from gpuprof.paths import baseline_dir as get_baseline_dir, best_dir as get_best_dir
-from gpuprof.search import choose_best, print_search_output, write_summary_csv
+from gpuprof.reporting import print_search_output, write_summary_csv
+from gpuprof.search import choose_best
 from gpuprof.server_cmd import get_knob_flags
 
 
