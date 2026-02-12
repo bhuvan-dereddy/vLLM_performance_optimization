@@ -356,6 +356,10 @@ def parse_client_metrics(client_raw: Dict[str, Any]) -> Dict[str, Optional[float
     return {
         "p50_latency_ms": as_float(stats.get("p50_total_ms")),
         "p95_latency_ms": as_float(stats.get("p95_total_ms")),
+        "p99_latency_ms": as_float(stats.get("p99_total_ms")),
+        "p50_ttft_ms": as_float(stats.get("p50_ttft_ms")),
+        "p95_ttft_ms": as_float(stats.get("p95_ttft_ms")),
+        "p99_ttft_ms": as_float(stats.get("p99_ttft_ms")),
         "chunks_per_s": as_float(stats.get("throughput_chunks_s")),
         "error_rate": error_rate,
     }
@@ -408,6 +412,10 @@ def evaluate(
     metrics = {
         "p50_latency_ms": None,
         "p95_latency_ms": None,
+        "p99_latency_ms": None,
+        "p50_ttft_ms": None,
+        "p95_ttft_ms": None,
+        "p99_ttft_ms": None,
         "chunks_per_s": None,
         "error_rate": 1.0,
     }
@@ -503,6 +511,10 @@ def evaluate(
         {
             "p50_latency_ms": metrics.get("p50_latency_ms"),
             "p95_latency_ms": metrics.get("p95_latency_ms"),
+            "p99_latency_ms": metrics.get("p99_latency_ms"),
+            "p50_ttft_ms": metrics.get("p50_ttft_ms"),
+            "p95_ttft_ms": metrics.get("p95_ttft_ms"),
+            "p99_ttft_ms": metrics.get("p99_ttft_ms"),
             "chunks_per_s": metrics.get("chunks_per_s"),
             "error_rate": metrics.get("error_rate"),
         },
@@ -569,15 +581,26 @@ def evaluate(
 
 
 def choose_best(records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    valid = [r for r in records if r.get("error_rate") == 0.0 and r.get("p50_latency_ms") is not None]
+    valid = [
+        r
+        for r in records
+        if r.get("error_rate") == 0.0
+        and r.get("p95_latency_ms") is not None
+        and r.get("p99_latency_ms") is not None
+        and r.get("p95_ttft_ms") is not None
+        and r.get("p50_latency_ms") is not None
+        and r.get("chunks_per_s") is not None
+    ]
     if not valid:
         raise SystemExit("No valid combinations with error_rate == 0")
 
-    def key_fn(r: Dict[str, Any]) -> Tuple[float, float, float]:
+    def key_fn(r: Dict[str, Any]) -> Tuple[float, float, float, float, float]:
+        p95 = float(r.get("p95_latency_ms"))
+        p99 = float(r.get("p99_latency_ms"))
+        p95_ttft = float(r.get("p95_ttft_ms"))
         p50 = float(r.get("p50_latency_ms"))
-        p95 = float(r.get("p95_latency_ms")) if r.get("p95_latency_ms") is not None else float("inf")
         tps = float(r.get("chunks_per_s")) if r.get("chunks_per_s") is not None else float("-inf")
-        return (p50, p95, -tps)
+        return (p95, p99, p95_ttft, p50, -tps)
 
     return sorted(valid, key=key_fn)[0]
 
@@ -591,7 +614,7 @@ def print_search_output(
     baseline_nvtx: Dict[str, Any],
     best_nvtx: Dict[str, Any],
 ) -> None:
-    print("trial,knob_mask,p50_latency_ms,p95_latency_ms,chunks_per_s,error_rate,delta_p50_ms")
+    print("trial,knob_mask,p95_latency_ms,p99_latency_ms,p95_ttft_ms,p50_latency_ms,chunks_per_s,error_rate,delta_p50_ms")
     b_p50 = baseline_metrics.get("p50_latency_ms")
     for r in rows:
         print(
@@ -599,8 +622,10 @@ def print_search_output(
                 [
                     str(r["trial"]),
                     str(r["knob_mask"]),
-                    format_num(r.get("p50_latency_ms")),
                     format_num(r.get("p95_latency_ms")),
+                    format_num(r.get("p99_latency_ms")),
+                    format_num(r.get("p95_ttft_ms")),
+                    format_num(r.get("p50_latency_ms")),
                     format_num(r.get("chunks_per_s")),
                     format_num(r.get("error_rate")),
                     format_delta(b_p50, r.get("p50_latency_ms")),
@@ -620,8 +645,10 @@ def print_search_output(
         return f"{label}: {format_num(b)} -> {format_num(v)} ({format_delta(b, v)})"
 
     print("BEST_VS_BASELINE")
-    print(line("p50_latency_ms", baseline_metrics.get("p50_latency_ms"), best_row.get("p50_latency_ms")))
     print(line("p95_latency_ms", baseline_metrics.get("p95_latency_ms"), best_row.get("p95_latency_ms")))
+    print(line("p99_latency_ms", baseline_metrics.get("p99_latency_ms"), best_row.get("p99_latency_ms")))
+    print(line("p95_ttft_ms", baseline_metrics.get("p95_ttft_ms"), best_row.get("p95_ttft_ms")))
+    print(line("p50_latency_ms", baseline_metrics.get("p50_latency_ms"), best_row.get("p50_latency_ms")))
     print(line("chunks_per_s", baseline_metrics.get("chunks_per_s"), best_row.get("chunks_per_s")))
     print("")
     print(line("gpu_compute_ms", baseline_trace.get("gpu_compute_ms"), best_trace.get("gpu_compute_ms")))
@@ -657,7 +684,7 @@ def write_summary_csv(path: Path, rows: List[Dict[str, Any]], baseline_p50: Opti
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["trial", "knob_mask", "p50_latency_ms", "p95_latency_ms", "chunks_per_s", "error_rate", "delta_p50_ms"])
+        w.writerow(["trial", "knob_mask", "p50_latency_ms", "p95_latency_ms", "p99_latency_ms", "p95_ttft_ms", "chunks_per_s", "error_rate", "delta_p50_ms"])
         for r in rows:
             w.writerow(
                 [
@@ -665,6 +692,8 @@ def write_summary_csv(path: Path, rows: List[Dict[str, Any]], baseline_p50: Opti
                     r["knob_mask"],
                     r.get("p50_latency_ms"),
                     r.get("p95_latency_ms"),
+                    r.get("p99_latency_ms"),
+                    r.get("p95_ttft_ms"),
                     r.get("chunks_per_s"),
                     r.get("error_rate"),
                     (None if baseline_p50 is None or r.get("p50_latency_ms") is None else (float(r["p50_latency_ms"]) - float(baseline_p50))),
@@ -694,6 +723,10 @@ class BruteForceSearch:
                 "flags": flags,
                 "p50_latency_ms": result.metrics.get("p50_latency_ms"),
                 "p95_latency_ms": result.metrics.get("p95_latency_ms"),
+                "p99_latency_ms": result.metrics.get("p99_latency_ms"),
+                "p50_ttft_ms": result.metrics.get("p50_ttft_ms"),
+                "p95_ttft_ms": result.metrics.get("p95_ttft_ms"),
+                "p99_ttft_ms": result.metrics.get("p99_ttft_ms"),
                 "chunks_per_s": result.metrics.get("chunks_per_s"),
                 "error_rate": result.metrics.get("error_rate"),
             }
@@ -752,7 +785,7 @@ class BruteForceSearch:
         write_json(
             self.base_dir / "summary.json",
             {
-                "objective": {"primary": "p50_latency_ms", "tie_breakers": ["p95_latency_ms", "chunks_per_s"]},
+                "objective": {"primary": "p95_latency_ms", "tie_breakers": ["p99_latency_ms", "p95_ttft_ms", "p50_latency_ms", "chunks_per_s"]},
                 "trials": all_trials,
                 "best": best_config,
             },

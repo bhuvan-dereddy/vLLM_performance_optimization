@@ -288,8 +288,10 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
     stats = {
         "p50_total_ms": pctl(total_ms, 50),
         "p95_total_ms": pctl(total_ms, 95),
+        "p99_total_ms": pctl(total_ms, 99),
         "p50_ttft_ms": pctl(ttft_ms, 50),
         "p95_ttft_ms": pctl(ttft_ms, 95),
+        "p99_ttft_ms": pctl(ttft_ms, 99),
         "throughput_chunks_s": round(float(throughput_chunks_s), 6),
         "total_output_chunks": total_chunks,
         "requests_per_s": round(float(requests_per_s), 6),
