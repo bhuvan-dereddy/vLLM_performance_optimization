@@ -6,6 +6,7 @@ import os
 import subprocess
 import time
 
+from gpuprof.config import get_concurrency, get_endpoint, get_num_requests, get_prompts_path, get_temperature, get_timeout_s
 from gpuprof.process import wait_for_ready, terminate_process_group, wait_for_report_finalized
 from gpuprof.server_cmd import resolve_server, _arg_value, resolve_model_name
 from gpuprof.trace_parse import find_nsys, parse_trace_sqlite
@@ -128,17 +129,9 @@ def evaluate(
             if not wait_for_ready(host, port, startup_timeout_s):
                 raise RuntimeError("server_not_ready")
 
-            dataset = cfg.get("dataset", {})
-            prompts = dataset.get("path") or dataset.get("prompts_jsonl")
-            if not prompts:
-                raise RuntimeError("dataset.path or dataset.prompts_jsonl missing")
-
-            endpoint = workload.get("endpoint", "/v1/chat/completions")
-            num_requests = int(workload.get("request_count", workload.get("num_requests", 0)))
-            if num_requests <= 0:
-                num_requests = int(cfg.get("experiment", {}).get("final_requests", 0))
-            if num_requests <= 0:
-                num_requests = int(cfg.get("experiment", {}).get("screening_requests", 20))
+            prompts = get_prompts_path(cfg)
+            endpoint = get_endpoint(cfg)
+            num_requests = get_num_requests(cfg)
 
             client_cmd = [
                 "python",
@@ -156,7 +149,7 @@ def evaluate(
                 "--num-requests",
                 str(num_requests),
                 "--concurrency",
-                str(workload.get("concurrency", 4)),
+                str(get_concurrency(cfg)),
                 "--max-new-tokens",
                 str(client_max_new_tokens),
                 "--max-model-len",
@@ -164,9 +157,9 @@ def evaluate(
                 "--max-input-tokens",
                 str(client_max_input_tokens),
                 "--temperature",
-                str(workload.get("temperature", 0.0)),
+                str(get_temperature(cfg)),
                 "--timeout-s",
-                str(workload.get("timeout_s", 180.0)),
+                str(get_timeout_s(cfg)),
                 "--out",
                 str(client_raw_path),
             ]
