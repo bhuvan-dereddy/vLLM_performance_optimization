@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Tuple
 
 
-def choose_best(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+def choose_top_k(records: List[Dict[str, Any]], k: int) -> List[Dict[str, Any]]:
     valid = [
         r
         for r in records
@@ -23,5 +23,8 @@ def choose_best(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         tps = float(r.get("chunks_per_s")) if r.get("chunks_per_s") is not None else float("-inf")
         return (p95, p99, p95_ttft, p50, -tps)
 
-    return sorted(valid, key=key_fn)[0]
+    return sorted(valid, key=key_fn)[:k]
 
+
+def choose_best(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return choose_top_k(records, 1)[0]
