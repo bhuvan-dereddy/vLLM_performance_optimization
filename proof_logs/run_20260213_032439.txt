@@ -1,0 +1,1 @@
+Failed to export sqlite for results/best/profile_tmp/trace.nsys-rep
