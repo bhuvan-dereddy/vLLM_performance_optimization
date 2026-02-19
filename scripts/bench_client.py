@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -10,7 +11,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
-from transformers import AutoTokenizer
 
 
 # -------------------------- utils --------------------------
@@ -57,7 +57,7 @@ def default_max_model_len() -> int:
 
 def select_prompts(
     prompts: List[str],
-    tokenizer: AutoTokenizer,
+    tokenizer: Any,
     max_input_tokens: int,
     num_requests: int,
 ) -> List[str]:
@@ -78,6 +78,20 @@ def select_prompts(
     idx = 0
     while len(out) < num_requests:
         out.append(ok[idx % len(ok)])
+        idx += 1
+    return out
+
+
+def select_prompts_unfiltered(
+    prompts: List[str],
+    num_requests: int,
+) -> List[str]:
+    if len(prompts) >= num_requests:
+        return prompts[:num_requests]
+    out: List[str] = []
+    idx = 0
+    while len(out) < num_requests:
+        out.append(prompts[idx % len(prompts)])
         idx += 1
     return out
 
@@ -223,13 +237,28 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
     if not prompts:
         raise SystemExit(f"No prompts loaded from {prompts_path}")
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=False)
-    selected = select_prompts(
-        prompts=prompts,
-        tokenizer=tokenizer,
-        max_input_tokens=args.max_input_tokens,
-        num_requests=args.num_requests,
-    )
+    if not args.skip_tokenizer:
+        try:
+            from transformers import AutoTokenizer
+        except Exception as e:
+            raise SystemExit(
+                "transformers is required unless --skip-tokenizer is set"
+            ) from e
+        tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=False)
+        selected = select_prompts(
+            prompts=prompts,
+            tokenizer=tokenizer,
+            max_input_tokens=args.max_input_tokens,
+            num_requests=args.num_requests,
+        )
+    else:
+        tokenizer = None
+        if args.max_input_tokens is not None:
+            logging.warning("skip-tokenizer enabled; not filtering prompts by token count")
+        selected = select_prompts_unfiltered(
+            prompts=prompts,
+            num_requests=args.num_requests,
+        )
 
     url = f"http://{args.host}:{args.port}{args.endpoint}"
 
@@ -339,11 +368,12 @@ def main() -> None:
     ap.add_argument("--timeout-s", dest="timeout_s", type=float, default=180.0)
     ap.add_argument("--max-model-len", type=int, default=default_max_model_len())
     ap.add_argument("--max-input-tokens", type=int, default=None)
+    ap.add_argument("--skip-tokenizer", action="store_true", default=False)
 
     ap.add_argument("--out", required=True)
 
     args = ap.parse_args()
-    if args.max_input_tokens is None:
+    if args.max_input_tokens is None and not args.skip_tokenizer:
         args.max_input_tokens = max(1, int(args.max_model_len) - int(args.max_new_tokens) - 32)
 
     out_path = Path(args.out)

@@ -12,7 +12,7 @@
         "prompts_jsonl": "data/sharegpt_prompts.jsonl"
     },
     "workload": {
-        "concurrency": 16,
+        "concurrency": 1,
         "max_new_tokens": 64,
         "temperature": 0.0,
         "timeout_s": 180.0

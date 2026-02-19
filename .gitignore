@@ -21,3 +21,4 @@ data/
 .idea/
 .env
 *.pem
+nohup.out
