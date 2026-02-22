@@ -1,0 +1,14 @@
+{
+  "model": "/home/ubuntu/gpu-profiling/models/tinyllama",
+  "served_model_name": "/home/ubuntu/gpu-profiling/models/tinyllama",
+  "host": "0.0.0.0",
+  "port": 8000,
+  "dtype": "float16",
+  "max_model_len": 2048,
+  "enable_prefix_caching": false,
+  "enable_chunked_prefill": false,
+  "gpu_memory_utilization": 0.6,
+  "max_num_batched_tokens": 4096,
+  "max_num_seqs": 16,
+  "scheduler_delay_factor": 0.0
+}

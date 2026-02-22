@@ -1,0 +1,129 @@
+import itertools, json, os, subprocess, time
+import json
+from pathlib import Path
+
+def _extract_metric_from_summary(path_str: str):
+    """Return p95 end_to_end_latency_s from llmperf summary json (seconds)."""
+    try:
+        with open(path_str, "r") as f:
+            data = json.load(f)
+
+        # Typical llmperf summary structure
+        e2e = data.get("end_to_end_latency_s") or data.get("end_to_end_latency") or {}
+        if isinstance(e2e, dict):
+            v = e2e.get("p95")
+            if v is not None:
+                return float(v)
+
+        # Fallback keys (in case the script stores it differently)
+        v = data.get("metric_p95_e2e_s") or data.get("p95_e2e_s")
+        if v is not None:
+            return float(v)
+    except Exception:
+        pass
+    return None
+
+
+
+GPU_HOST = os.environ.get("GPU_HOST", "34.237.52.21")
+GPU_SSH_KEY = os.environ.get("GPU_SSH_KEY", "/home/ubuntu/bhuvan-profiling.pem")
+GPU_USER = os.environ.get("GPU_USER", "ubuntu")
+
+OPENAI_API_BASE = f"http://{GPU_HOST}:8000/v1"
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "dummy")
+
+MODEL = "/home/ubuntu/gpu-profiling/models/tinyllama"
+
+BASE_ARGS = [
+    "python", "token_benchmark_ray.py",
+    "--model", MODEL,
+    "--llm-api", "openai",
+    "--num-concurrent-requests", "1",
+    "--mean-input-tokens", "256", "--stddev-input-tokens", "0",
+    "--mean-output-tokens", "64", "--stddev-output-tokens", "0",
+    "--max-num-completed-requests", "200",
+    "--timeout", "180",
+    "--additional-sampling-params", json.dumps({"temperature": 0.0, "max_tokens": 64}),
+]
+
+# 6 knobs (bool)
+KNOBS = [
+    ("disable_log_requests", ["--disable-log-requests"]),
+    ("prefix_caching", ["--enable-prefix-caching"]),
+    ("chunked_prefill", ["--enable-chunked-prefill"]),
+    ("max_num_batched_tokens_8192", ["--max-num-batched-tokens", "8192"]),
+    ("max_num_seqs_128", ["--max-num-seqs", "128"]),
+]
+
+OUTDIR = Path("runs/sweep6_" + str(int(time.time())))
+OUTDIR.mkdir(parents=True, exist_ok=True)
+
+def gpu_restart_vllm(flags):
+    # calls GPU-side launcher which already stops old + waits ready
+    cmd = [
+        "ssh", "-o", "StrictHostKeyChecking=no",
+        "-i", GPU_SSH_KEY,
+        f"{GPU_USER}@{GPU_HOST}",
+        "cd /home/ubuntu/gpu-profiling && bash scripts/start_vllm_with_flags.sh " + " ".join(flags)
+    ]
+    print("GPU RESTART:", " ".join(cmd))
+    p = subprocess.run(cmd, text=True, capture_output=True)
+    return p.returncode, p.stdout, p.stderr
+
+def run_one(mask_bits):
+    enabled = [KNOBS[i] for i, b in enumerate(mask_bits) if b == 1]
+    flags = [x for _, fl in enabled for x in fl]
+    mask = "".join(str(b) for b in mask_bits)
+
+    trial_dir = OUTDIR / f"trial_{mask}"
+    trial_dir.mkdir(parents=True, exist_ok=True)
+    (trial_dir / "vllm_flags.json").write_text(json.dumps({"mask": mask, "flags": flags}, indent=2))
+
+    # restart vLLM on GPU with flags
+    rc, out, err = gpu_restart_vllm(flags)
+    (trial_dir / "gpu_restart_stdout.txt").write_text(out)
+    (trial_dir / "gpu_restart_stderr.txt").write_text(err)
+    if rc != 0:
+        return {"mask": mask, "flags": flags, "ok": False, "error": f"gpu_restart_rc={rc}"}
+
+    env = os.environ.copy()
+    env["OPENAI_API_BASE"] = OPENAI_API_BASE
+    env["OPENAI_API_KEY"] = OPENAI_API_KEY
+
+    cmd = BASE_ARGS + ["--results-dir", str(trial_dir / "llmperf")]
+    print("\n=== RUN", mask, "FLAGS:", " ".join(flags), "===")
+    p = subprocess.run(cmd, env=env, text=True, capture_output=True)
+    (trial_dir / "stdout.txt").write_text(p.stdout)
+    (trial_dir / "stderr.txt").write_text(p.stderr)
+    if p.returncode != 0:
+        return {"mask": mask, "flags": flags, "ok": False, "error": f"llmperf_rc={p.returncode}"}
+
+    llmperf_dir = trial_dir / "llmperf"
+    jsons = sorted(llmperf_dir.glob("*_summary.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+    if not jsons:
+        return {"mask": mask, "flags": flags, "ok": False, "error": "no summary json found"}
+
+    summary = json.loads(jsons[0].read_text())
+    metric_ttft = summary.get("results_ttft_s_quantiles_p95")
+    metric_thr  = summary.get("results_mean_output_throughput_token_per_s")
+    return {"mask": mask, "flags": flags, "ok": True, "metric_p95_e2e_s": metric, "summary_json": str(jsons[0])}
+
+def main():
+    results = []
+    for bits in itertools.product([0,1], repeat=len(KNOBS)):
+        r = run_one(bits)
+        results.append(r)
+        (OUTDIR / "results_so_far.json").write_text(json.dumps(results, indent=2))
+
+    oks = [r for r in results if r.get("ok") and r.get("metric_p95_e2e_s") is not None]
+    oks.sort(key=lambda r: r["metric_p95_e2e_s"])
+    best = oks[0] if oks else None
+
+    (OUTDIR / "results_all.json").write_text(json.dumps(results, indent=2))
+    (OUTDIR / "best.json").write_text(json.dumps(best, indent=2) if best else "null")
+    print("\n=== DONE ===")
+    print("OUTDIR:", OUTDIR)
+    print("BEST:", best)
+
+if __name__ == "__main__":
+    main()

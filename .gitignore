@@ -1,24 +1,26 @@
+# secrets / keys
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# virtualenvs
 venv/
-.venv/
+.llmperf-venv/
+llmperf-venv/
+llmperf-venv/**
 __pycache__/
 *.pyc
 
-results/
+# results / artifacts (don't push massive benchmark output)
+runs/
+sweep_results/
 artifacts/
+*.log
 *.nsys-rep
-*.qdstrm
 *.sqlite
+*.qdrep
+*.qdenv
 
-models/
-datasets/
-data/
-*.safetensors
-*.bin
-*.pt
-
-.DS_Store
-.vscode/
-.idea/
-.env
-*.pem
-nohup.out
+# notebooks checkpoints
+.ipynb_checkpoints/
