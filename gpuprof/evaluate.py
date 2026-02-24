@@ -4,11 +4,12 @@ from typing import Any, Dict, List, Optional
 
 import os
 import subprocess
+import sys
 import time
 
 from gpuprof.config import get_concurrency, get_endpoint, get_num_requests, get_prompts_path, get_temperature, get_timeout_s
 from gpuprof.process import wait_for_ready, terminate_process_group, wait_for_report_finalized
-from gpuprof.server_cmd import resolve_server, _arg_value, resolve_model_name
+from gpuprof.server_cmd import assemble_server_cmd, resolve_server, _arg_value, resolve_model_name
 from gpuprof.trace_parse import find_nsys, parse_trace_sqlite
 from gpuprof.utils import load_json, write_json
 
@@ -54,30 +55,69 @@ class EvaluationResult:
     resolved_env: Dict[str, str]
 
 
+def resolve_workload_params(cfg: Dict[str, Any], resolved_cmd: List[str]) -> Dict[str, int]:
+    workload = cfg.get("workload", {})
+    if "--max-model-len" in resolved_cmd:
+        client_max_model_len = int(_arg_value(resolved_cmd, "--max-model-len", "2048"))
+    else:
+        client_max_model_len = int(cfg.get("server", {}).get("max_model_len", 2048))
+
+    if "input_token_count" in workload:
+        input_token_count = int(workload["input_token_count"])
+    elif "max_input_tokens" in workload:
+        input_token_count = int(workload["max_input_tokens"])
+    else:
+        raise SystemExit("workload.input_token_count is required")
+
+    if "output_token_count" in workload:
+        output_token_count = int(workload["output_token_count"])
+    elif "max_new_tokens" in workload:
+        output_token_count = int(workload["max_new_tokens"])
+    else:
+        raise SystemExit("workload.output_token_count is required")
+
+    warmup_requests = int(workload.get("warmup_requests", 0))
+    if warmup_requests < 0:
+        raise SystemExit("workload.warmup_requests must be >= 0")
+
+    return {
+        "max_model_len": client_max_model_len,
+        "input_token_count": input_token_count,
+        "output_token_count": output_token_count,
+        "warmup_requests": warmup_requests,
+        "safety_buffer_tokens": 32,
+    }
+
+
 def evaluate(
     cfg: Dict[str, Any],
     run_dir: Path,
     knob_flags: List[str],
-    assignment: Dict[str, bool],
+    assignment: Dict[str, Any],
     profile: bool,
 ) -> EvaluationResult:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     serve_cmd, env, host, port, startup_timeout_s = resolve_server(cfg)
-    resolved_cmd = serve_cmd + knob_flags
+    resolved_cmd = assemble_server_cmd(serve_cmd, knob_flags)
+    workload_params = resolve_workload_params(cfg, resolved_cmd)
 
-    logs_path = run_dir / "logs.txt"
+    logs_path = run_dir / "server.log"
     client_raw_path = run_dir / "client_raw.json"
 
     nsys_cmd_prefix: List[str] = []
     if profile:
+        trace_rep = run_dir / "trace.nsys-rep"
+        sqlite_path = run_dir / "trace.sqlite"
+        for artifact in (trace_rep, sqlite_path):
+            if artifact.exists():
+                raise SystemExit(f"Refusing to overwrite existing nsys artifact: {artifact}")
         nsys = find_nsys()
         trace = cfg.get("nsys", {}).get("trace", "cuda,nvtx,osrt")
         trace_prefix = run_dir / "trace"
         nsys_cmd_prefix = [
             nsys,
             "profile",
-            "--force-overwrite=true",
             f"--trace={trace}",
             "--sample=none",
             "--cpuctxsw=none",
@@ -114,17 +154,6 @@ def evaluate(
             preexec_fn=os.setsid,
         )
 
-        workload = cfg.get("workload", {})
-        if "--max-model-len" in resolved_cmd:
-            client_max_model_len = int(_arg_value(resolved_cmd, "--max-model-len", "2048"))
-        else:
-            client_max_model_len = int(cfg.get("server", {}).get("max_model_len", 2048))
-        client_max_new_tokens = int(workload.get("max_new_tokens", 64))
-        if "max_input_tokens" in workload:
-            client_max_input_tokens = int(workload["max_input_tokens"])
-        else:
-            client_max_input_tokens = max(1, client_max_model_len - client_max_new_tokens - 32)
-
         try:
             if not wait_for_ready(host, port, startup_timeout_s):
                 raise RuntimeError("server_not_ready")
@@ -134,7 +163,7 @@ def evaluate(
             num_requests = get_num_requests(cfg)
 
             client_cmd = [
-                "python",
+                sys.executable,
                 "scripts/bench_client.py",
                 "--host",
                 host,
@@ -148,14 +177,16 @@ def evaluate(
                 str(prompts),
                 "--num-requests",
                 str(num_requests),
+                "--warmup-requests",
+                str(workload_params["warmup_requests"]),
                 "--concurrency",
                 str(get_concurrency(cfg)),
                 "--max-new-tokens",
-                str(client_max_new_tokens),
+                str(workload_params["output_token_count"]),
                 "--max-model-len",
-                str(client_max_model_len),
+                str(workload_params["max_model_len"]),
                 "--max-input-tokens",
-                str(client_max_input_tokens),
+                str(workload_params["input_token_count"]),
                 "--temperature",
                 str(get_temperature(cfg)),
                 "--timeout-s",
@@ -176,6 +207,9 @@ def evaluate(
             if proc is not None:
                 terminate_process_group(proc)
 
+    if not client_raw_path.exists():
+        write_json(client_raw_path, {"error": "client_run_failed"})
+
     write_json(
         run_dir / "client_metrics.json",
         {
@@ -187,22 +221,6 @@ def evaluate(
             "p99_ttft_ms": metrics.get("p99_ttft_ms"),
             "chunks_per_s": metrics.get("chunks_per_s"),
             "error_rate": metrics.get("error_rate"),
-        },
-    )
-
-    write_json(
-        run_dir / "config.json",
-        {
-            "resolved_server_cmd": resolved_cmd,
-            "resolved_env": {k: v for k, v in env.items() if k in (cfg.get("env") or {}) or k in ((cfg.get("server") or {}).get("env") or {})},
-            "assignment": assignment,
-            "profile": profile,
-            "client_effective": {
-                "max_model_len": client_max_model_len,
-                "max_new_tokens": client_max_new_tokens,
-                "max_input_tokens": client_max_input_tokens,
-                "safety_buffer_tokens": 32,
-            },
         },
     )
 
@@ -236,7 +254,6 @@ def evaluate(
             raise SystemExit(f"Failed to export sqlite for {trace_rep}")
 
         nvtx_phases, trace_summary = parse_trace_sqlite(sqlite_path)
-        write_json(run_dir / "nvtx_phases.json", nvtx_phases)
         write_json(run_dir / "trace_summary.json", trace_summary)
 
     return EvaluationResult(
