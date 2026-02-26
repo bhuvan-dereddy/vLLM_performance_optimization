@@ -1,0 +1,145 @@
+{
+  "hardware": {
+    "gpu": "T4",
+    "num_gpus": 1
+  },
+  "model": {
+    "model_name": "qwen3b",
+    "model_dir": "/home/ubuntu/gpu-profiling/models/qwen3b",
+    "dtype": "float16",
+    "max_model_len": 2048
+  },
+  "workload": {
+    "type": "synthetic",
+    "input_token_count": 128,
+    "output_token_count": 256,
+    "num_requests": 25,
+    "warmup_requests": 3,
+    "concurrency": 4
+  },
+  "profiling": {
+    "nsys": {
+      "profile_baseline": true,
+      "profile_best": true
+    }
+  },
+  "metrics": {
+    "primary": "p95_total_ms"
+  },
+  "experiment": {
+    "screening_requests": 20,
+    "final_requests": 100,
+    "top_k_final": 4
+  },
+  "knobs": [
+    {
+      "name": "enable_chunked_prefill",
+      "flag": "--enable-chunked-prefill",
+      "off_flags": [
+        "--no-enable-chunked-prefill"
+      ],
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "enforce_eager",
+      "flag": "--enforce-eager",
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "max_num_batched_tokens",
+      "flag": "--max-num-batched-tokens",
+      "values": [
+        2048,
+        2560,
+        3072
+      ]
+    },
+    {
+      "name": "enable_prefix_caching",
+      "flag": "--enable-prefix-caching",
+      "off_flags": [
+        "--no-enable-prefix-caching"
+      ],
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "gpu_memory_utilization",
+      "flag": "--gpu-memory-utilization",
+      "values": [
+        0.9,
+        0.85
+      ]
+    },
+    {
+      "name": "block_size",
+      "flag": "--block-size",
+      "values": [
+        16,
+        32
+      ]
+    },
+    {
+      "name": "disable_log_requests",
+      "flag": "--disable-log-requests",
+      "off_flags": [
+        "--no-disable-log-requests"
+      ],
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "disable_log_stats",
+      "flag": "--disable-log-stats",
+      "values": [
+        false,
+        true
+      ]
+    }
+  ],
+  "_server_old": {
+    "gpu_memory_utilization": [
+      0.85,
+      0.9
+    ],
+    "enable_chunked_prefill": [
+      true
+    ],
+    "attention_backend": [
+      "FLASHINFER"
+    ],
+    "block_size": [
+      16,
+      32
+    ],
+    "enable_prefix_caching": [
+      true,
+      false
+    ],
+    "max_num_batched_tokens": [
+      2560,
+      3072
+    ],
+    "enforce_eager": [
+      true
+    ],
+    "disable_log_requests": [
+      false,
+      true
+    ],
+    "disable_log_stats": [
+      false,
+      true
+    ]
+  }
+}
