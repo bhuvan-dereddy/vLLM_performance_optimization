@@ -1,0 +1,114 @@
+{
+  "server": {
+    "model_name": "LLaMA 1B fp16",
+    "model_dir": "models/tinyllama",
+    "host": "127.0.0.1",
+    "port": 8000,
+    "dtype": "float16",
+    "max_model_len": 2048,
+    "max_num_seqs": 1,
+    "gpu_memory_utilization": 0.9,
+    "swap_space": 4,
+    "block_size": 16,
+    "kv_cache_dtype": "auto",
+    "enable_prefix_caching": false,
+    "disable_log_requests": false,
+    "startup_timeout_s": 240,
+    "attention_backend": "TORCH_SDPA"
+  },
+  "dataset": {
+    "prompts_jsonl": "data/sharegpt_prompts_prefill_1850_1900.jsonl"
+  },
+  "workload": {
+    "endpoint": "/v1/chat/completions",
+    "concurrency": 1,
+    "warmup_requests": 3,
+    "num_requests": 25,
+    "input_token_count": 1900,
+    "output_token_count": 32,
+    "temperature": 0.0,
+    "timeout_s": 180.0
+  },
+  "metrics": {
+    "primary": "p95_total_ms"
+  },
+  "record_only": {
+    "disable_log_requests": false
+  },
+  "knobs": [
+    {
+      "name": "enable_chunked_prefill",
+      "flag": "--enable-chunked-prefill",
+      "off_flags": [
+        "--no-enable-chunked-prefill"
+      ],
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "enforce_eager",
+      "flag": "--enforce-eager",
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "max_num_batched_tokens",
+      "flag": "--max-num-batched-tokens",
+      "values": [
+        2048,
+        2560,
+        3072
+      ]
+    },
+    {
+      "name": "enable_prefix_caching",
+      "flag": "--enable-prefix-caching",
+      "off_flags": [
+        "--no-enable-prefix-caching"
+      ],
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "gpu_memory_utilization",
+      "flag": "--gpu-memory-utilization",
+      "values": [
+        0.9,
+        0.85
+      ]
+    },
+    {
+      "name": "block_size",
+      "flag": "--block-size",
+      "values": [
+        16,
+        32
+      ]
+    },
+    {
+      "name": "disable_log_requests",
+      "flag": "--disable-log-requests",
+      "off_flags": [
+        "--no-disable-log-requests"
+      ],
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "disable_log_stats",
+      "flag": "--disable-log-stats",
+      "values": [
+        false,
+        true
+      ]
+    }
+  ]
+}

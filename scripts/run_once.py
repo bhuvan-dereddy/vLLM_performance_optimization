@@ -202,11 +202,15 @@ if __name__ == "__main__":
 ''')
     
     nsys_out = run_dir / "profile_capture"
+    nsys_rep = Path(str(nsys_out) + ".nsys-rep")
+    sqlite_out = run_dir / "profile_capture.sqlite"
+    for artifact in (nsys_rep, sqlite_out):
+        if artifact.exists():
+            return False, f"Refusing to overwrite existing nsys artifact: {artifact}"
     
     # Run nsys profile
     nsys_cmd = [
         nsys_path, "profile",
-        "--force-overwrite=true",
         "--trace=osrt,cuda,nvtx",
         "--sample=none",
         "--cpuctxsw=none",
@@ -234,14 +238,11 @@ if __name__ == "__main__":
             return False, f"nsys profile failed with code {result.returncode}"
         
         # Export to SQLite
-        nsys_rep = Path(str(nsys_out) + ".nsys-rep")
         if not nsys_rep.exists():
             return False, f"Expected .nsys-rep not found: {nsys_rep}"
         
-        sqlite_out = run_dir / "profile_capture.sqlite"
         export_cmd = [
             nsys_path, "stats",
-            "--force-overwrite=true",
             f"--output={run_dir}/profile_capture",
             str(nsys_rep),
         ]
@@ -409,6 +410,7 @@ def main() -> None:
             "--max-new-tokens", str(args.max_new_tokens),
             "--temperature", str(args.temperature),
             "--timeout-s", str(args.timeout_s),
+            "--skip-tokenizer",
             "--out", str(client_out),
         ]
         subprocess.check_call(cmd)

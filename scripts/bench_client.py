@@ -237,6 +237,8 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
     if not prompts:
         raise SystemExit(f"No prompts loaded from {prompts_path}")
 
+    total_needed = int(args.warmup_requests) + int(args.num_requests)
+
     if not args.skip_tokenizer:
         try:
             from transformers import AutoTokenizer
@@ -249,7 +251,7 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
             prompts=prompts,
             tokenizer=tokenizer,
             max_input_tokens=args.max_input_tokens,
-            num_requests=args.num_requests,
+            num_requests=total_needed,
         )
     else:
         tokenizer = None
@@ -257,8 +259,13 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
             logging.warning("skip-tokenizer enabled; not filtering prompts by token count")
         selected = select_prompts_unfiltered(
             prompts=prompts,
-            num_requests=args.num_requests,
+            num_requests=total_needed,
         )
+
+    warmup_prompts = selected[: args.warmup_requests]
+    measured_prompts = selected[args.warmup_requests :]
+    if len(measured_prompts) != args.num_requests:
+        raise SystemExit("Internal error: measured prompt count mismatch")
 
     url = f"http://{args.host}:{args.port}{args.endpoint}"
 
@@ -267,10 +274,28 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
     connector = aiohttp.TCPConnector(limit=0, ttl_dns_cache=300)
     timeout = aiohttp.ClientTimeout(total=args.timeout_s)
 
-    t0 = time.time()
+    warmup_results: List[RequestResult] = []
+    measured_results: List[RequestResult] = []
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        # Warmup phase: explicit sequential loop; do not schedule measured work yet.
+        for i, p in enumerate(warmup_prompts):
+            warmup_results.append(
+                await run_one(
+                    sem=sem,
+                    session=session,
+                    url=url,
+                    model=args.model,
+                    prompt=p,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    timeout_s=args.timeout_s,
+                    idx=i,
+                )
+            )
+
+        t0 = time.time()
         tasks = []
-        for i, p in enumerate(selected):
+        for i, p in enumerate(measured_prompts):
             tasks.append(
                 asyncio.create_task(
                     run_one(
@@ -282,16 +307,18 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
                         max_new_tokens=args.max_new_tokens,
                         temperature=args.temperature,
                         timeout_s=args.timeout_s,
-                        idx=i,
+                        idx=i + args.warmup_requests,
                     )
                 )
             )
 
-        results: List[RequestResult] = await asyncio.gather(*tasks)
+        measured_results = await asyncio.gather(*tasks)
     t1 = time.time()
 
-    # Only successful requests should count for stats
-    ok_results = [r for r in results if r.http_status == 200 and r.error is None]
+    # Metrics are computed from measured requests only.
+    ok_results = [r for r in measured_results if r.http_status == 200 and r.error is None]
+    error_count = len(measured_results) - len(ok_results)
+    error_rate = (float(error_count) / float(len(measured_results))) if measured_results else None
 
     total_ms: List[float] = []
     ttft_ms: List[float] = []
@@ -310,17 +337,21 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
         else 0.0
     )
 
-    throughput_chunks_s = (total_chunks / wall_s) if wall_s > 0 else 0.0
+    decode_tok_s = (total_chunks / wall_s) if wall_s > 0 else 0.0
+    throughput_chunks_s = decode_tok_s
     requests_per_s = (len(ok_results) / wall_s) if wall_s > 0 else 0.0
     avg_output_chunks_per_request = (total_chunks / len(ok_results)) if len(ok_results) > 0 else 0.0
 
+    p95_total_ms = pctl(total_ms, 95)
     stats = {
         "p50_total_ms": pctl(total_ms, 50),
-        "p95_total_ms": pctl(total_ms, 95),
+        "p95_total_ms": p95_total_ms,
+        "p95_e2e_latency_ms": p95_total_ms,
         "p99_total_ms": pctl(total_ms, 99),
         "p50_ttft_ms": pctl(ttft_ms, 50),
         "p95_ttft_ms": pctl(ttft_ms, 95),
         "p99_ttft_ms": pctl(ttft_ms, 99),
+        "decode_tok_s": round(float(decode_tok_s), 6),
         "throughput_chunks_s": round(float(throughput_chunks_s), 6),
         "total_output_chunks": total_chunks,
         "requests_per_s": round(float(requests_per_s), 6),
@@ -330,7 +361,7 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
 
     # Save a small sample of failures (helps debugging)
     failures = []
-    for r in results:
+    for r in measured_results:
         if r.http_status != 200 or r.error is not None:
             failures.append(
                 {
@@ -343,9 +374,13 @@ async def main_async(args: argparse.Namespace) -> Dict[str, Any]:
             break
 
     out = {
+        "warmup_requests": int(args.warmup_requests),
         "num_requests": args.num_requests,
+        "total_sent": int(args.warmup_requests) + int(args.num_requests),
         "ok_requests": len(ok_results),
-        "failed_requests": len(results) - len(ok_results),
+        "failed_requests": error_count,
+        "error_count": error_count,
+        "error_rate": error_rate,
         "stats": stats,
         "failures_sample": failures,
     }
@@ -361,6 +396,7 @@ def main() -> None:
 
     ap.add_argument("--prompts", required=True)
     ap.add_argument("--num-requests", type=int, default=200)
+    ap.add_argument("--warmup-requests", type=int, default=3)
     ap.add_argument("--concurrency", type=int, default=16)
 
     ap.add_argument("--max-new-tokens", type=int, default=128)
@@ -373,6 +409,10 @@ def main() -> None:
     ap.add_argument("--out", required=True)
 
     args = ap.parse_args()
+    if args.warmup_requests < 0:
+        raise SystemExit("--warmup-requests must be >= 0")
+    if args.num_requests <= 0:
+        raise SystemExit("--num-requests must be > 0")
     if args.max_input_tokens is None and not args.skip_tokenizer:
         args.max_input_tokens = max(1, int(args.max_model_len) - int(args.max_new_tokens) - 32)
 
