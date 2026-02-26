@@ -13,7 +13,8 @@
     "kv_cache_dtype": "auto",
     "enable_prefix_caching": false,
     "disable_log_requests": false,
-    "startup_timeout_s": 240
+    "startup_timeout_s": 240,
+    "attention_backend": "TORCH_SDPA"
   },
   "dataset": {
     "prompts_jsonl": "data/sharegpt_prompts.jsonl"

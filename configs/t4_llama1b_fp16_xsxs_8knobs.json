@@ -9,7 +9,8 @@
     "max_num_seqs": 1,
     "swap_space": 4,
     "kv_cache_dtype": "auto",
-    "startup_timeout_s": 240
+    "startup_timeout_s": 240,
+    "attention_backend": "TORCH_SDPA"
   },
   "dataset": {
     "prompts_jsonl": "data/sharegpt_prompts.jsonl"
@@ -20,7 +21,7 @@
     "warmup_requests": 3,
     "num_requests": 25,
     "input_token_count": 128,
-    "output_token_count": 32,
+    "output_token_count": 512,
     "temperature": 0.0,
     "timeout_s": 180.0
   },

@@ -24,3 +24,8 @@ artifacts/
 
 # notebooks checkpoints
 .ipynb_checkpoints/
+# temp / generated junk
+_trial_temp/
+results/
+models/
+data/

@@ -2,26 +2,39 @@ from typing import Any, Dict, List, Tuple
 
 
 def choose_top_k(records: List[Dict[str, Any]], k: int) -> List[Dict[str, Any]]:
-    valid = [
-        r
-        for r in records
-        if r.get("error_rate") == 0.0
-        and r.get("p95_latency_ms") is not None
-        and r.get("p99_latency_ms") is not None
-        and r.get("p95_ttft_ms") is not None
-        and r.get("p50_latency_ms") is not None
-        and r.get("chunks_per_s") is not None
-    ]
-    if not valid:
-        raise SystemExit("No valid combinations with error_rate == 0")
+    def as_float(v: Any) -> float:
+        return float(v)
 
-    def key_fn(r: Dict[str, Any]) -> Tuple[float, float, float, float, float]:
-        p95 = float(r.get("p95_latency_ms"))
-        p99 = float(r.get("p99_latency_ms"))
-        p95_ttft = float(r.get("p95_ttft_ms"))
-        p50 = float(r.get("p50_latency_ms"))
-        tps = float(r.get("chunks_per_s")) if r.get("chunks_per_s") is not None else float("-inf")
-        return (p95, p99, p95_ttft, p50, -tps)
+    def first_present(r: Dict[str, Any], keys: List[str]) -> Any:
+        for key in keys:
+            if r.get(key) is not None:
+                return r.get(key)
+        return None
+
+    valid: List[Dict[str, Any]] = []
+    for r in records:
+        error_count = r.get("error_count")
+        if error_count is not None and as_float(error_count) > 0.0:
+            continue
+        error_rate = r.get("error_rate")
+        if error_rate is not None and as_float(error_rate) > 0.0:
+            continue
+
+        p95_total = first_present(r, ["p95_total_ms", "p95_latency_ms"])
+        p95_ttft = first_present(r, ["p95_ttft_ms"])
+        chunks_per_s = first_present(r, ["chunks_per_s"])
+        if p95_total is None or p95_ttft is None or chunks_per_s is None:
+            continue
+        valid.append(r)
+
+    if not valid:
+        raise SystemExit("No valid combinations after filtering errors")
+
+    def key_fn(r: Dict[str, Any]) -> Tuple[float, float, float]:
+        p95_total = as_float(first_present(r, ["p95_total_ms", "p95_latency_ms"]))
+        p95_ttft = as_float(first_present(r, ["p95_ttft_ms"]))
+        tps = as_float(first_present(r, ["chunks_per_s"]))
+        return (p95_total, p95_ttft, -tps)
 
     return sorted(valid, key=key_fn)[:k]
 

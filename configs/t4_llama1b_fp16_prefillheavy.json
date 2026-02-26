@@ -13,16 +13,17 @@
     "kv_cache_dtype": "auto",
     "enable_prefix_caching": false,
     "disable_log_requests": false,
-    "startup_timeout_s": 240
+    "startup_timeout_s": 240,
+    "attention_backend": "TORCH_SDPA"
   },
   "dataset": {
-    "prompts_jsonl": "data/sharegpt_prompts.jsonl"
+    "prompts_jsonl": "data/sharegpt_prompts_prefill_1850_1900.jsonl"
   },
   "workload": {
     "endpoint": "/v1/chat/completions",
     "concurrency": 1,
-    "warmup_requests": 5,
-    "num_requests": 50,
+    "warmup_requests": 3,
+    "num_requests": 25,
     "input_token_count": 1900,
     "output_token_count": 32,
     "temperature": 0.0,
@@ -61,6 +62,52 @@
         2048,
         2560,
         3072
+      ]
+    },
+    {
+      "name": "enable_prefix_caching",
+      "flag": "--enable-prefix-caching",
+      "off_flags": [
+        "--no-enable-prefix-caching"
+      ],
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "gpu_memory_utilization",
+      "flag": "--gpu-memory-utilization",
+      "values": [
+        0.9,
+        0.85
+      ]
+    },
+    {
+      "name": "block_size",
+      "flag": "--block-size",
+      "values": [
+        16,
+        32
+      ]
+    },
+    {
+      "name": "disable_log_requests",
+      "flag": "--disable-log-requests",
+      "off_flags": [
+        "--no-disable-log-requests"
+      ],
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "disable_log_stats",
+      "flag": "--disable-log-stats",
+      "values": [
+        false,
+        true
       ]
     }
   ]
